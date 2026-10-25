@@ -297,7 +297,7 @@ export default function CallManager({ userId }: { userId: number }) {
       endLocally(MIC_ERROR, null);
       return;
     }
-    if (phaseRef.current !== 'calling') {
+    if ((phaseRef.current as string) !== 'connecting') {
       stream.getTracks().forEach((t) => t.stop()); // caller hung up while the browser asked for the mic
       return;
     }
@@ -313,7 +313,7 @@ export default function CallManager({ userId }: { userId: number }) {
 
       const res = await startCallAction(userId, detail.userId, { type: offer.type, sdp: offer.sdp ?? '' });
 
-      if (phaseRef.current !== 'calling') {
+     if ((phaseRef.current as string) !== 'connecting') {
         if (res.ok) endCallAction(res.callId, userId, 'cancelled').catch(() => {});
         return;
       }
@@ -366,7 +366,7 @@ export default function CallManager({ userId }: { userId: number }) {
       endLocally(MIC_ERROR, null);
       return;
     }
-    if (phaseRef.current !== 'connecting') {
+  if ((phaseRef.current as string) !== 'calling') {
       stream.getTracks().forEach((t) => t.stop());
       return;
     }
@@ -451,7 +451,7 @@ export default function CallManager({ userId }: { userId: number }) {
         remoteDescSetRef.current = true;
         stopTone();
         if (ringTimeoutRef.current) clearTimeout(ringTimeoutRef.current);
-        if (phaseRef.current === 'calling') go('connecting');
+        if ((phaseRef.current as string) === 'calling') go('connecting');
       }
 
       if (pc && remoteDescSetRef.current) {
@@ -547,14 +547,10 @@ export default function CallManager({ userId }: { userId: number }) {
 
   /* ---------------------------------- UI ---------------------------------- */
 
-  const statusLabel =
-    phase === 'calling'
-      ? 'Calling...'
-      : phase === 'incoming'
-      ? 'Incoming voice call'
-      : phase === 'connecting'
-      ? 'Connecting...'
-      : formatTimer(seconds);
+  let statusLabel = formatTimer(seconds);
+  if (phase === 'calling') statusLabel = 'Calling...';
+  else if (phase === 'incoming') statusLabel = 'Incoming voice call';
+  else if (phase === 'connecting') statusLabel = 'Connecting...';
 
   return (
     <>
