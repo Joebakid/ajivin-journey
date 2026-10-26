@@ -100,7 +100,7 @@ async function DriverDashboardContent({ searchParams }: { searchParams: Promise<
 
   const driverId = parsedId;
 
-  // Fetch Driver Profile
+  // Fetch Driver Profile (Reverted to only fetch existing columns)
   const userResult = await sql`SELECT id, name, phone, license_number FROM users WHERE id = ${driverId}`;
   if (userResult.length === 0) {
     redirect('/login');
@@ -236,6 +236,7 @@ async function DriverDashboardContent({ searchParams }: { searchParams: Promise<
                   name="vehicle"
                   type="text"
                   required
+                  defaultValue={driver.license_number || ''}
                   className="w-full px-4 py-2.5 bg-slate-50 rounded-lg border border-slate-200 focus:ring-2 focus:ring-[#0a7337] outline-none text-sm"
                   placeholder="e.g. Mack Truck (KJA-991)"
                 />
