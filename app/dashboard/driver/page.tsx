@@ -2,6 +2,7 @@ import { Suspense } from 'react';
 import { sql } from '@/src/lib/db';
 import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
+import { cookies } from 'next/headers';
 import Link from 'next/link';
 import ChatSystem from '@/app/components/ChatSystem';
 import ExpenseForm from '@/app/components/ExpenseForm';
@@ -13,7 +14,17 @@ import MapSwitcher from '@/app/components/MapSwitcher';
 import EndTripButton from '@/app/components/EndTripButton';
 import CallManager from '@/app/components/CallManager';
 import Nav from '@/app/components/Nav';
+import Vehicle from '@/app/components/Vehicle';
+import { ensureVehiclesTable } from '@/app/actions/vehicle';
 import { cancelTripAction, startTripAction } from '@/app/actions/trip';
+
+function statusClasses(status: string) {
+  if (status === 'Completed') return 'bg-green-100 text-[#0a7337]';
+  if (status === 'Declined' || status === 'Cancelled') return 'bg-red-100 text-red-700';
+  if (status === 'Active' || status === 'En Route') return 'bg-blue-100 text-blue-700';
+  if (status === 'Pending') return 'bg-orange-100 text-orange-700';
+  return 'bg-slate-100 text-slate-700';
+}
 
 async function submitJourneyRequest(formData: FormData) {
   'use server';
@@ -28,16 +39,15 @@ async function submitJourneyRequest(formData: FormData) {
 
   try {
     await sql`
-      INSERT INTO trips (driver_id, destination, status)
-      VALUES (${driverId}, ${destination + ' (' + vehicle + ') - ' + purpose}, 'Pending')
+      INSERT INTO trips (driver_id, destination, status, created_at)
+      VALUES (${driverId}, ${destination + ' (' + vehicle + ') - ' + purpose}, 'Pending', NOW())
     `;
 
-    // Alert logistics manager
     await sql`
       INSERT INTO notifications (title, message, target_role)
       VALUES (
         'New Journey Request',
-        ${'Driver requested a journey to ' + destination},
+        ${'Driver requested a journey to ' + destination + ' with ' + vehicle},
         'manager'
       )
     `;
@@ -49,7 +59,6 @@ async function submitJourneyRequest(formData: FormData) {
   }
 }
 
-// Driver ends an in-progress trip: marks it Completed and notifies the manager.
 async function endTripAction(formData: FormData) {
   'use server';
 
@@ -87,45 +96,91 @@ async function endTripAction(formData: FormData) {
 
   revalidatePath('/dashboard/driver');
   revalidatePath('/dashboard/manager');
+  revalidatePath('/dashboard/staff');
 }
 
-async function DriverDashboardContent({ searchParams }: { searchParams: Promise<{ userId?: string }> }) {
-  const resolvedParams = await searchParams;
-  const parsedId = resolvedParams.userId ? parseInt(resolvedParams.userId, 10) : null;
+async function DriverDashboardContent() {
+  const cookieStore = await cookies();
+  const rawUserId = cookieStore.get('userId')?.value || cookieStore.get('ajivin_session_id')?.value;
+  const driverId = rawUserId ? parseInt(rawUserId, 10) : null;
 
-  // Strict Privacy Check: Do NOT default to driver 1. If no valid session ID, redirect to login
-  if (!parsedId || isNaN(parsedId)) {
+  if (!driverId || isNaN(driverId)) {
     redirect('/login');
   }
 
-  const driverId = parsedId;
+  await ensureVehiclesTable();
 
-  // Fetch Driver Profile (Reverted to only fetch existing columns)
-  const userResult = await sql`SELECT id, name, phone, license_number FROM users WHERE id = ${driverId}`;
+  const [
+    userResult,
+    tripResult,
+    managerResult,
+    allManagers,
+    vehiclesResult,
+    driverHistoryResult // Fetching driver's personal trip log
+  ] = await Promise.all([
+    sql`SELECT id, name, phone, license_number, role FROM users WHERE id = ${driverId}`,
+
+    // Query active trip with passenger details and scheduled time
+    sql`
+      SELECT
+        t.*,
+        req.name as requester_name,
+        req.phone as requester_phone
+      FROM trips t
+      LEFT JOIN users req ON t.requester_id = req.id
+      WHERE t.driver_id = ${driverId} AND t.status IN ('Active', 'Pending', 'En Route')
+      ORDER BY t.created_at DESC
+      LIMIT 1
+    `,
+    sql`SELECT id, name, role, phone FROM users WHERE role = 'manager' ORDER BY id ASC LIMIT 1`,
+    sql`SELECT id, name, role, phone FROM users WHERE role = 'manager' ORDER BY name ASC`,
+    sql`
+      SELECT id, driver_id, plate_number, model, is_active, created_at
+      FROM vehicles
+      WHERE driver_id = ${driverId}
+      ORDER BY is_active DESC, created_at DESC
+    `,
+    // Retrieve personal log of all trips for this specific driver
+    sql`
+      SELECT id, destination, status, fasttrack_code, created_at
+      FROM trips
+      WHERE driver_id = ${driverId}
+      ORDER BY created_at DESC
+      LIMIT 50
+    `
+  ]);
+
   if (userResult.length === 0) {
     redirect('/login');
   }
 
-  const driver = userResult[0];
+  const currentUser = userResult[0];
+  const userRole = (currentUser.role || '').toLowerCase();
 
-  // Fetch Active/Pending Trip for THIS specific driver only
-  const tripResult = await sql`
-    SELECT * FROM trips
-    WHERE driver_id = ${driverId} AND status IN ('Active', 'Pending', 'En Route')
-    ORDER BY created_at DESC
-    LIMIT 1
-  `;
+  if (userRole === 'manager') {
+    redirect('/dashboard/manager');
+  }
+  if (userRole === 'staff') {
+    redirect('/dashboard/staff');
+  }
+  if (userRole !== 'driver') {
+    redirect('/login');
+  }
+
+  const driver = currentUser;
   const currentTrip = tripResult[0] || null;
-
-  // Fetch Manager Details for Direct Chat & VoIP Calls
-  const managerResult = await sql`SELECT id, name, role, phone FROM users WHERE role = 'manager' ORDER BY id ASC LIMIT 1`;
   const manager = managerResult[0] || { id: 2, name: 'Dispatch Manager', role: 'Logistics Manager', phone: null };
+  const vehicles = vehiclesResult as any[];
+  const activeVehicle = vehicles.find((v) => v.is_active) || vehicles[0] || null;
+  const driverTrips = driverHistoryResult as any[];
 
-  // Fetch All Managers for Search Selection & Calling
-  const allManagers = await sql`SELECT id, name, role, phone FROM users WHERE role = 'manager' ORDER BY name ASC`;
+  const defaultVehicleDisplay = activeVehicle
+    ? `${activeVehicle.model} (${activeVehicle.plate_number})`
+    : driver.license_number || '';
 
   const tab1Content = (
     <div className="space-y-6">
+      {/* Current Journey / Journey Request */}
       <div className="bg-white rounded-2xl p-5 shadow-sm border border-slate-200">
         {currentTrip ? (
           <div className="space-y-5">
@@ -134,13 +189,14 @@ async function DriverDashboardContent({ searchParams }: { searchParams: Promise<
                 <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">Current Journey</p>
                 <h2 className="text-xl font-bold text-slate-900">{currentTrip.destination.split(' (')[0]}</h2>
               </div>
-              <span className={`text-xs font-bold px-3 py-1 rounded-full ${
-                currentTrip.status === 'Pending' ? 'bg-orange-100 text-orange-700' : 'bg-green-100 text-[#0a7337]'
-              }`}>
+              <span
+                className={`text-xs font-bold px-3 py-1 rounded-full ${statusClasses(currentTrip.status)}`}
+              >
                 {currentTrip.status}
               </span>
             </div>
 
+            {/* Trip Specs & Scheduled Time */}
             <div className="space-y-2 text-sm border-y border-slate-100 py-3">
               <div className="flex justify-between">
                 <span className="text-slate-500">Trip ID</span>
@@ -150,43 +206,70 @@ async function DriverDashboardContent({ searchParams }: { searchParams: Promise<
                 <span className="text-slate-500">FastTrack Code</span>
                 <span className="font-bold text-[#0a7337]">{currentTrip.fasttrack_code || 'Pending Clearance'}</span>
               </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">Scheduled Time</span>
+                <span className="font-bold text-slate-900">
+                  ⏱ {currentTrip.scheduled_time || 'Immediate / On Demand'}
+                </span>
+              </div>
+              {currentTrip.requester_name && (
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Passenger / Staff</span>
+                  <span className="font-bold text-slate-900">
+                    {currentTrip.requester_name} {currentTrip.requester_phone ? `(${currentTrip.requester_phone})` : ''}
+                  </span>
+                </div>
+              )}
             </div>
 
             {/* State 1: Pending Manager Approval */}
             {currentTrip.status === 'Pending' && (
               <div className="space-y-3">
                 <div className="p-3 bg-orange-50 border border-orange-200 rounded-xl text-xs text-orange-800">
-                  Waiting for Logistics Manager to approve this journey request.
+                  Waiting for Logistics Manager to clear this trip request.
                 </div>
-                <form action={async () => {
-                  'use server';
-                  await cancelTripAction(currentTrip.id);
-                }}>
-                  <button type="submit" className="w-full bg-red-50 hover:bg-red-100 text-red-600 font-bold py-2.5 rounded-xl text-xs transition-colors">
+                <form
+                  action={async () => {
+                    'use server';
+                    await cancelTripAction(currentTrip.id);
+                  }}
+                >
+                  <button
+                    type="submit"
+                    className="w-full bg-red-50 hover:bg-red-100 text-red-600 font-bold py-2.5 rounded-xl text-xs transition-colors"
+                  >
                     Withdraw Trip Request
                   </button>
                 </form>
               </div>
             )}
 
-            {/* State 2: Approved, ready to Start Trip */}
+            {/* State 2: Approved, Assigned, Ready to Start */}
             {currentTrip.status === 'Active' && !currentTrip.is_started && (
               <div className="space-y-3">
-                <div className="p-3 bg-green-50 border border-green-200 rounded-xl text-xs text-green-800">
-                  Trip approved! Click below to start the trip and enable GPS tracking.
+                <div className="p-3.5 bg-green-50 border border-green-200 rounded-xl text-xs text-green-900 space-y-1">
+                  <p className="font-bold">Trip Approved & Cleared by Dispatch!</p>
+                  <p className="text-slate-600">
+                    Scheduled Time: <strong>{currentTrip.scheduled_time || 'Immediate'}</strong>. Click below to start the trip and enable GPS tracking.
+                  </p>
                 </div>
-                <form action={async () => {
-                  'use server';
-                  await startTripAction(currentTrip.id);
-                }}>
-                  <button type="submit" className="w-full bg-[#0a7337] hover:bg-[#085a2b] text-white font-bold py-3.5 rounded-xl text-sm transition-all shadow-md active:scale-95">
+                <form
+                  action={async () => {
+                    'use server';
+                    await startTripAction(currentTrip.id);
+                  }}
+                >
+                  <button
+                    type="submit"
+                    className="w-full bg-[#0a7337] hover:bg-[#085a2b] text-white font-bold py-3.5 rounded-xl text-sm transition-all shadow-md active:scale-95 uppercase tracking-wider"
+                  >
                     Start Trip Now
                   </button>
                 </form>
               </div>
             )}
 
-            {/* State 3: Trip in progress -> Map Switcher (Primary / Backup), transit details, End Trip */}
+            {/* State 3: Trip in Progress */}
             {(currentTrip.is_started || currentTrip.status === 'En Route') && (
               <div className="space-y-4">
                 <MapSwitcher
@@ -199,7 +282,7 @@ async function DriverDashboardContent({ searchParams }: { searchParams: Promise<
 
                 <div className="space-y-2">
                   <p className="text-xs text-slate-500 text-center">
-                    Tap End Trip when you arrive. Your manager will be notified.
+                    Tap End Trip when you arrive. Your manager and passenger will be notified.
                   </p>
                   <form action={endTripAction}>
                     <input type="hidden" name="trip_id" value={currentTrip.id} />
@@ -236,7 +319,7 @@ async function DriverDashboardContent({ searchParams }: { searchParams: Promise<
                   name="vehicle"
                   type="text"
                   required
-                  defaultValue={driver.license_number || ''}
+                  defaultValue={defaultVehicleDisplay}
                   className="w-full px-4 py-2.5 bg-slate-50 rounded-lg border border-slate-200 focus:ring-2 focus:ring-[#0a7337] outline-none text-sm"
                   placeholder="e.g. Mack Truck (KJA-991)"
                 />
@@ -264,11 +347,17 @@ async function DriverDashboardContent({ searchParams }: { searchParams: Promise<
         )}
       </div>
 
+      {/* Driver's Assigned Vehicle Component (Current Plate & History) */}
+      <Vehicle driverId={driverId} vehicles={vehicles} />
+
       {/* Driver Profile */}
       <div className="bg-white rounded-2xl p-4 shadow-sm border border-slate-200 relative">
         <div className="flex justify-between items-center mb-3 border-b border-slate-100 pb-2">
           <h3 className="text-xs font-bold text-slate-800 uppercase">Driver Profile</h3>
-          <Link href={`/dashboard/profile?id=${driverId}`} className="text-xs font-bold text-[#0a7337] hover:underline flex items-center gap-1">
+          <Link
+            href="/dashboard/profile"
+            className="text-xs font-bold text-[#0a7337] hover:underline flex items-center gap-1"
+          >
             Edit
           </Link>
         </div>
@@ -283,13 +372,59 @@ async function DriverDashboardContent({ searchParams }: { searchParams: Promise<
           </div>
         </div>
       </div>
+
+      {/* Driver's Personal Trip Log */}
+      <div className="bg-white rounded-2xl p-5 shadow-sm border border-slate-200">
+        <div className="flex justify-between items-center mb-4">
+          <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wider">My Journey Log</h3>
+          <span className="text-xs font-bold bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">
+            {driverTrips.length} Trips
+          </span>
+        </div>
+
+        {driverTrips.length === 0 ? (
+          <div className="py-6 text-center text-xs text-slate-400 border border-dashed border-slate-200 rounded-xl">
+            You haven't logged any trips yet.
+          </div>
+        ) : (
+          <div className="space-y-3 max-h-[350px] overflow-y-auto pr-1">
+            {driverTrips.map((trip) => (
+              <div
+                key={trip.id}
+                className="p-3 bg-slate-50 rounded-xl border border-slate-100 flex flex-col gap-2 hover:border-slate-300 transition-colors"
+              >
+                <div className="flex justify-between items-start gap-3">
+                  <div className="min-w-0 flex-1">
+                    <span className="font-bold text-slate-900 block text-sm leading-tight mb-1 truncate">
+                      {trip.destination}
+                    </span>
+                    <div className="flex items-center gap-2 text-[10px] uppercase tracking-wider text-slate-500">
+                      <span>TRP-{trip.id}</span>
+                      <span>•</span>
+                      <span>{new Date(trip.created_at).toLocaleDateString()}</span>
+                    </div>
+                  </div>
+                  <span className={`px-2.5 py-1 rounded-full font-bold text-[10px] shrink-0 ${statusClasses(trip.status)}`}>
+                    {trip.status}
+                  </span>
+                </div>
+                {trip.fasttrack_code && (
+                  <div className="text-[10px] text-slate-500 font-medium">
+                    FastTrack Code: <strong className="text-slate-800 font-mono">{trip.fasttrack_code}</strong>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
     </div>
   );
 
   return (
     <div className="min-h-[calc(100vh-60px)] bg-slate-50 flex flex-col md:bg-gray-100">
       <OnlineTracker userId={driverId} />
-      {/* Real-time WebRTC Call Manager listener */}
       <CallManager userId={driverId} />
 
       <Nav userId={driverId} userName={driver.name} userRole="driver" />
@@ -297,13 +432,13 @@ async function DriverDashboardContent({ searchParams }: { searchParams: Promise<
       <Container className="flex-1 flex flex-col p-0 md:p-6 md:pt-0 min-h-0">
         <DriverMobileTabs
           tripContent={tab1Content}
-          expenseContent={<ExpenseForm driverId={driverId.toString()} />}
+          expenseContent={<ExpenseForm driverId={driverId.toString()} vehicles={vehicles} />}
           chatContent={
             <ChatSystem
               senderId={driverId}
               receiverId={manager.id}
               recipientName={`${manager.name} (${manager.role})`}
-              personnelList={allManagers as { id: number; name: string; role: string; phone?: string | null }[]}
+              personnelList={allManagers as { id: number; name: string; role: string; phone?: string |null }[]}
             />
           }
         />
@@ -312,10 +447,16 @@ async function DriverDashboardContent({ searchParams }: { searchParams: Promise<
   );
 }
 
-export default function DriverDashboardPage({ searchParams }: { searchParams: Promise<{ userId?: string }> }) {
+export default function DriverDashboardPage() {
   return (
-    <Suspense fallback={<div className="min-h-screen flex items-center justify-center"><Loader text="Loading dashboard..." /></div>}>
-      <DriverDashboardContent searchParams={searchParams} />
+    <Suspense
+      fallback={
+        <div className="min-h-screen flex items-center justify-center">
+          <Loader text="Loading dashboard..." />
+        </div>
+      }
+    >
+      <DriverDashboardContent />
     </Suspense>
   );
 }

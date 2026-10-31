@@ -1,5 +1,7 @@
 import { Suspense } from 'react';
 import { sql } from '@/src/lib/db';
+import { cookies } from 'next/headers';
+import { redirect } from 'next/navigation';
 import Link from 'next/link';
 import Container from '@/app/components/Container';
 import Loader from '@/app/components/Loader';
@@ -14,8 +16,12 @@ import AutoRefresh from '@/app/components/AutoRefresh';
 import CallManager from '@/app/components/CallManager';
 import UnreadBadge from '@/app/components/UnreadBadge';
 import Nav from '@/app/components/Nav';
+import CreatePersonnelModal from '@/app/components/CreatePersonnelModal';
+import VehicleFleetManager from '@/app/components/VehicleFleetManager';
+import { ensureVehiclesTable } from '@/app/actions/vehicle';
+import { ensureStaffTables } from '@/app/actions/staff';
+import { ensureTripsTable } from '@/app/actions/trip';
 
-// Optimized to prevent throwing expensive SQL errors if 'started_at' doesn't exist
 async function loadActiveTrips(): Promise<any[]> {
   const rows = await sql`
     SELECT t.*, u.id as driver_id, u.name as driver_name, u.phone
@@ -24,10 +30,10 @@ async function loadActiveTrips(): Promise<any[]> {
     WHERE t.status IN ('Active', 'En Route')
     ORDER BY t.created_at DESC
   `;
-  
-  return rows.map(r => ({
+
+  return rows.map((r) => ({
     ...r,
-    started_at: r.started_at || r.created_at // JavaScript fallback is instant
+    started_at: r.started_at || r.created_at,
   }));
 }
 
@@ -36,7 +42,18 @@ async function ManagerDashboardContent({
 }: {
   searchParams: Promise<{ userId?: string; tripId?: string }>;
 }) {
-  const managerId = 2;
+  const cookieStore = await cookies();
+  const rawUserId = cookieStore.get('userId')?.value || cookieStore.get('ajivin_session_id')?.value;
+  const authUserId = rawUserId ? parseInt(rawUserId, 10) : null;
+
+  if (!authUserId || isNaN(authUserId)) {
+    redirect('/login');
+  }
+
+  await ensureTripsTable();
+  await ensureVehiclesTable();
+  await ensureStaffTables();
+
   const resolvedParams = await searchParams;
   const selectedUserId = resolvedParams.userId ? parseInt(resolvedParams.userId, 10) : null;
   const selectedTripId = resolvedParams.tripId ? parseInt(resolvedParams.tripId, 10) : null;
@@ -49,39 +66,183 @@ async function ManagerDashboardContent({
     selectedUserRows,
     userTrips,
     userExpenses,
+    vehiclesResult,
+    vehicleExpensesResult,
+    tripCommentsResult,
   ] = await Promise.all([
-    sql`SELECT name, email, role, phone FROM users WHERE id = ${managerId}`,
+    // 1. Verify manager authorization
+    sql`SELECT id, name, email, role, phone FROM users WHERE id = ${authUserId} AND role = 'manager' LIMIT 1`,
+
+    // 2. Pending trip clearance
     sql`
-      SELECT t.id, t.destination, t.created_at, u.name as driver_name, u.phone
+      SELECT
+        t.id,
+        t.destination,
+        t.created_at,
+        t.driver_id,
+        t.requester_id,
+        t.scheduled_time,
+        u.name as driver_name,
+        u.phone as driver_phone,
+        req.name as requester_name,
+        req.phone as requester_phone
       FROM trips t
-      JOIN users u ON t.driver_id = u.id
+      LEFT JOIN users u ON t.driver_id = u.id
+      LEFT JOIN users req ON t.requester_id = req.id
       WHERE t.status = 'Pending'
       ORDER BY t.created_at DESC
     `,
+
+    // 3. Active fleet trips
     loadActiveTrips(),
+
+    // 4. Live personnel with active plate numbers AND current trip busy status
     sql`
-      SELECT id, name, email, role, phone, license_number, is_online, last_seen
-      FROM users
-      ORDER BY is_online DESC, role ASC, name ASC
+      SELECT
+        u.id, u.name, u.email, u.role, u.phone, u.license_number, u.is_online, u.last_seen,
+        v.plate_number, v.model as vehicle_model,
+        EXISTS (
+          SELECT 1 FROM trips t
+          WHERE t.driver_id = u.id AND t.status IN ('Active', 'En Route')
+        ) as is_busy,
+        (
+          SELECT t.id FROM trips t
+          WHERE t.driver_id = u.id AND t.status IN ('Active', 'En Route')
+          ORDER BY t.created_at DESC LIMIT 1
+        ) as active_trip_id
+      FROM users u
+      LEFT JOIN vehicles v ON v.driver_id = u.id AND v.is_active = TRUE
+      ORDER BY u.is_online DESC, u.role ASC, u.name ASC
     `,
+
+    // 5. Selected user profile
     selectedUserId
-      ? sql`SELECT id, name, email, role, phone, license_number, is_online FROM users WHERE id = ${selectedUserId}`
+      ? sql`
+          SELECT
+            u.id, u.name, u.email, u.role, u.phone, u.license_number, u.is_online,
+            v.plate_number, v.model as vehicle_model
+          FROM users u
+          LEFT JOIN vehicles v ON v.driver_id = u.id AND v.is_active = TRUE
+          WHERE u.id = ${selectedUserId}
+          LIMIT 1
+        `
       : Promise.resolve([] as any[]),
+
+    // 6. Selected driver trips
     selectedUserId
       ? sql`SELECT * FROM trips WHERE driver_id = ${selectedUserId} ORDER BY created_at DESC`
       : Promise.resolve([] as any[]),
+
+    // 7. Selected driver combined expenses
     selectedUserId
-      ? sql`SELECT * FROM expenses WHERE driver_id = ${selectedUserId} ORDER BY created_at DESC`
+      ? sql`
+          SELECT
+            e.id,
+            e.expense_type,
+            e.amount,
+            e.description,
+            e.vehicle_plate,
+            e.created_at
+          FROM expenses e
+          WHERE e.driver_id = ${selectedUserId}
+          UNION ALL
+          SELECT
+            ve.id + 2000000 as id,
+            ve.expense_type,
+            ve.amount,
+            ve.description,
+            v.plate_number as vehicle_plate,
+            ve.created_at
+          FROM vehicle_expenses ve
+          JOIN vehicles v ON ve.vehicle_id = v.id
+          WHERE v.driver_id = ${selectedUserId}
+          ORDER BY created_at DESC
+        `
       : Promise.resolve([] as any[]),
+
+    // 8. Fleet vehicles with assigned driver info
+    sql`
+      SELECT
+        v.id,
+        v.driver_id,
+        v.plate_number,
+        v.model,
+        v.is_active,
+        v.created_at,
+        u.name as driver_name,
+        u.phone as driver_phone
+      FROM vehicles v
+      LEFT JOIN users u ON v.driver_id = u.id
+      ORDER BY v.is_active DESC, v.created_at DESC
+    `,
+
+    // 9. All unified vehicle expenses
+    sql`
+      SELECT
+        ve.id,
+        ve.vehicle_id,
+        ve.expense_type,
+        ve.amount,
+        ve.description,
+        ve.logged_by_name,
+        ve.created_at
+      FROM vehicle_expenses ve
+      UNION ALL
+      SELECT
+        e.id + 1000000 as id,
+        v.id as vehicle_id,
+        e.expense_type,
+        e.amount,
+        e.description,
+        u.name as logged_by_name,
+        e.created_at
+      FROM expenses e
+      JOIN users u ON e.driver_id = u.id
+      JOIN vehicles v ON (
+        (e.vehicle_plate IS NOT NULL AND e.vehicle_plate != '' AND UPPER(REPLACE(REPLACE(v.plate_number, ' ', ''), '-', '')) = UPPER(REPLACE(REPLACE(e.vehicle_plate, ' ', ''), '-', '')))
+        OR ((e.vehicle_plate IS NULL OR e.vehicle_plate = '') AND v.driver_id = e.driver_id AND v.is_active = TRUE)
+      )
+      ORDER BY created_at DESC
+    `,
+
+    // 10. All Staff Trip Comments & Ratings
+    sql`
+      SELECT
+        c.id,
+        c.trip_id,
+        c.user_name,
+        c.comment,
+        c.rating,
+        c.created_at,
+        t.destination
+      FROM trip_comments c
+      LEFT JOIN trips t ON c.trip_id = t.id
+      ORDER BY c.created_at DESC
+    `
   ]);
 
-  const manager = managerResult[0] || { name: 'Manager', email: 'N/A', role: 'manager', phone: 'N/A' };
+  if (managerResult.length === 0) {
+    redirect('/login');
+  }
+
+  const manager = managerResult[0];
+  const managerId = manager.id;
   const selectedUser = (selectedUserRows as any[])[0] || null;
 
-  // Everyone is included in the chat menu now
   const chatPersonnel = (initialPersonnel as any[])
     .filter((p) => p.id !== managerId)
     .map((p) => ({ id: p.id, name: p.name, role: p.role, phone: p.phone }));
+
+  const driversList = (initialPersonnel as any[])
+    .filter((p) => p.role === 'driver')
+    .map((d) => ({
+      id: d.id,
+      name: d.name,
+      phone: d.phone,
+      plate_number: d.plate_number,
+      is_busy: Boolean(d.is_busy),
+      active_trip_id: d.active_trip_id || null,
+    }));
 
   const activeTrips = (activeTripRows as any[]).map((t) => ({
     id: t.id as number,
@@ -107,7 +268,10 @@ async function ManagerDashboardContent({
       <div className="bg-white rounded-2xl p-4 shadow-sm border border-slate-200 relative">
         <div className="flex justify-between items-center mb-3 border-b border-slate-100 pb-2">
           <h3 className="text-xs font-bold text-slate-800 uppercase">My Profile</h3>
-          <Link href={`/dashboard/profile?id=${managerId}`} className="text-xs font-bold text-[#0a7337] hover:underline flex items-center gap-1">
+          <Link
+            href="/dashboard/profile"
+            className="text-xs font-bold text-[#0a7337] hover:underline flex items-center gap-1"
+          >
             Edit
           </Link>
         </div>
@@ -123,15 +287,28 @@ async function ManagerDashboardContent({
         </div>
       </div>
 
-      <PendingApprovals initialTrips={pendingTrips as any} />
-      
-      {/* Renders the global fleet map ONLY if no specific driver is selected */}
+      <VehicleFleetManager
+        vehicles={vehiclesResult as any[]}
+        expenses={vehicleExpensesResult as any[]}
+        drivers={driversList}
+      />
+
+      <PendingApprovals
+        initialTrips={pendingTrips as any}
+        drivers={driversList as any}
+      />
+
       {!selectedUserId && (
         <ActiveJourneys trips={activeTrips as any} initialTripId={initialTripId} />
       )}
 
-      {/* The list of drivers to click on */}
-      <LivePersonnelTracker initialPersonnel={initialPersonnel as any} />
+      <div className="space-y-3">
+        <div className="flex justify-between items-center px-1">
+          <h3 className="text-xs font-bold text-slate-700 uppercase tracking-wider">Fleet Personnel</h3>
+          <CreatePersonnelModal />
+        </div>
+        <LivePersonnelTracker initialPersonnel={initialPersonnel as any} />
+      </div>
     </div>
   );
 
@@ -155,6 +332,7 @@ async function ManagerDashboardContent({
               user={selectedUser as any}
               trips={userTrips as any[]}
               expenses={userExpenses as any[]}
+              comments={tripCommentsResult as any[]}
             />
           }
           tab3Label="Chat"
@@ -179,7 +357,13 @@ export default function ManagerDashboardPage({
   searchParams: Promise<{ userId?: string; tripId?: string }>;
 }) {
   return (
-    <Suspense fallback={<div className="min-h-screen flex items-center justify-center"><Loader text="Loading dispatch board..." /></div>}>
+    <Suspense
+      fallback={
+        <div className="min-h-screen flex items-center justify-center">
+          <Loader text="Loading dispatch board..." />
+        </div>
+      }
+    >
       <ManagerDashboardContent searchParams={searchParams} />
     </Suspense>
   );

@@ -7,7 +7,7 @@ import { cookies } from 'next/headers';
 import { revalidatePath } from 'next/cache';
 
 export async function handleLogin(formData: FormData) {
-  const email = (formData.get('email') as string)?.trim();
+  const email = (formData.get('email') as string)?.trim().toLowerCase();
   const password = formData.get('password') as string;
 
   if (!email || !password) {
@@ -17,7 +17,6 @@ export async function handleLogin(formData: FormData) {
   let redirectUrl: string | null = null;
 
   try {
-    // 1. Fetch user by email
     const userResult = await sql`
       SELECT id, name, email, role, password_hash 
       FROM users 
@@ -31,81 +30,91 @@ export async function handleLogin(formData: FormData) {
       return { error: 'Invalid email address or password.' };
     }
 
-    // 2. Verify hashed password
     const isPasswordValid = await bcrypt.compare(password, user.password_hash);
-
     if (!isPasswordValid) {
       return { error: 'Invalid email address or password.' };
     }
 
-    // 3. Update database presence (Set user online upon successful login)
     await sql`
       UPDATE users 
       SET is_online = TRUE, last_seen = CURRENT_TIMESTAMP 
       WHERE id = ${user.id}
     `;
 
-    // 4. Store authenticated user identity in HTTP-only cookies
+    const normalizedRole = (user.role || '').toLowerCase();
+
     try {
       const cookieStore = await cookies();
       cookieStore.set('userId', String(user.id), {
         path: '/',
         httpOnly: true,
         sameSite: 'lax',
-        maxAge: 60 * 60 * 24 * 7, // 7 days
+        secure: process.env.NODE_ENV === 'production',
+        maxAge: 60 * 60 * 24 * 7,
       });
-      cookieStore.set('userRole', String(user.role), {
+      cookieStore.set('userRole', normalizedRole, {
         path: '/',
         httpOnly: true,
         sameSite: 'lax',
+        secure: process.env.NODE_ENV === 'production',
         maxAge: 60 * 60 * 24 * 7,
       });
     } catch (cookieErr) {
       console.warn('Could not set session cookies:', cookieErr);
     }
 
-    // 5. Purge stale caches across both portals
     revalidatePath('/dashboard/driver');
     revalidatePath('/dashboard/manager');
+    revalidatePath('/dashboard/staff');
 
-    // 6. Assign target dashboard URL
-    redirectUrl =
-      user.role === 'manager'
-        ? `/dashboard/manager?userId=${user.id}`
-        : `/dashboard/driver?userId=${user.id}`;
+    if (normalizedRole === 'manager') {
+      redirectUrl = '/dashboard/manager';
+    } else if (normalizedRole === 'staff') {
+      redirectUrl = '/dashboard/staff';
+    } else {
+      redirectUrl = '/dashboard/driver';
+    }
   } catch (error) {
+    if (error instanceof Error && error.message.includes('NEXT_REDIRECT')) {
+      throw error;
+    }
     console.error('Login action error:', error);
     return { error: 'An unexpected authentication error occurred. Please try again.' };
   }
 
-  // Next.js redirect must be called outside try/catch
   if (redirectUrl) {
     redirect(redirectUrl);
   }
 }
 
-// Handler to mark user offline and clear session cookies on Logout
 export async function handleLogoutAction(userId?: number) {
+  let targetId = userId;
+
   try {
-    if (userId) {
+    const cookieStore = await cookies();
+
+    if (!targetId) {
+      const cookieUserId = cookieStore.get('userId')?.value;
+      if (cookieUserId) targetId = parseInt(cookieUserId, 10);
+    }
+
+    if (targetId) {
       await sql`
         UPDATE users 
         SET is_online = FALSE, last_seen = CURRENT_TIMESTAMP 
-        WHERE id = ${userId}
+        WHERE id = ${targetId}
       `;
     }
 
-    try {
-      const cookieStore = await cookies();
-      cookieStore.delete('userId');
-      cookieStore.delete('userRole');
-    } catch (e) {
-      console.warn('Could not clear cookies:', e);
-    }
+    cookieStore.delete('userId');
+    cookieStore.delete('userRole');
 
     revalidatePath('/dashboard/driver');
     revalidatePath('/dashboard/manager');
+    revalidatePath('/dashboard/staff');
   } catch (error) {
     console.error('Failed to update logout status:', error);
   }
+
+  redirect('/login');
 }

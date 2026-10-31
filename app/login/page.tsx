@@ -24,7 +24,7 @@ export default function LoginPage() {
         setLoading(false);
       }
     } catch (err) {
-      // Re-throw Next.js redirect token so client navigation proceeds
+      // Re-throw Next.js redirect token so navigation proceeds smoothly
       if (err instanceof Error && err.message.includes('NEXT_REDIRECT')) {
         throw err;
       }
@@ -41,7 +41,9 @@ export default function LoginPage() {
             <Logo className="w-16 h-16 rounded-xl" />
           </div>
           <h1 className="text-2xl font-bold text-slate-900">Welcome Back</h1>
-          <p className="text-sm text-slate-500">Sign in to your AJMS Dispatch account</p>
+          <p className="text-xs text-slate-500 uppercase tracking-wider font-semibold">
+            AJIVIN LOGISTICS MANAGEMENT SYSTEM
+          </p>
         </div>
 
         {error && (
@@ -77,7 +79,7 @@ export default function LoginPage() {
               required
               autoComplete="email"
               className="w-full px-4 py-3 rounded-xl border border-slate-300 focus:ring-2 focus:ring-[#0a7337] outline-none transition-all text-sm bg-slate-50 focus:bg-white"
-              placeholder="driver@ajms.com"
+              placeholder="staff@ajivin.com"
             />
           </div>
 
@@ -108,13 +110,6 @@ export default function LoginPage() {
             )}
           </button>
         </form>
-
-        <p className="text-center text-sm text-slate-600 pt-2 border-t border-slate-100">
-          Don't have an account?{' '}
-          <Link href="/register" className="font-bold text-[#0a7337] hover:underline">
-            Register here
-          </Link>
-        </p>
       </div>
     </main>
   );
