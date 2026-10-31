@@ -40,6 +40,7 @@ export default function ExpenseForm({
   const formRef = useRef<HTMLFormElement>(null);
 
   const loadHistory = async () => {
+    // getDriverExpensesAction should ideally return the unified query (driver logs + fleet logs)
     const res = await getDriverExpensesAction(parseInt(driverId, 10));
     if (res.success) setHistory(res.expenses);
   };
@@ -253,110 +254,7 @@ export default function ExpenseForm({
         </button>
       </form>
 
-      {/* Driver's Personal Expense History */}
-      <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
-        <div className="px-5 py-4 border-b border-slate-100 bg-slate-50 flex justify-between items-center">
-          <h3 className="font-bold text-slate-900 text-sm">Your Expense History</h3>
-          <span className="bg-slate-200 text-slate-700 text-xs font-bold px-2 py-0.5 rounded-full">
-            {history.length}
-          </span>
-        </div>
-        <div className="divide-y divide-slate-100">
-          {history.length === 0 ? (
-            <p className="p-6 text-center text-xs text-slate-400 italic">You haven't logged any expenses yet.</p>
-          ) : (
-            history.map((exp) => (
-              <div key={exp.id} className="p-4 sm:p-5 flex flex-col gap-3 text-xs">
-                <div className="flex justify-between items-start gap-4">
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className="font-bold text-slate-900 text-sm">{exp.expense_type || exp.category}</span>
-                      <span className="bg-slate-100 text-slate-700 font-mono text-[10px] font-bold px-2 py-0.5 rounded-full uppercase border border-slate-200">
-                        {exp.vehicle_plate || 'NO PLATE'}
-                      </span>
-                    </div>
-                    <p className="text-slate-500 truncate">{exp.description}</p>
-                    <span className="block text-[10px] text-slate-400 mt-1">
-                      {new Date(exp.created_at).toLocaleDateString()}
-                    </span>
-                  </div>
-
-                  <div className="text-right shrink-0">
-                    <span className="block font-bold text-[#0a7337] text-sm mb-1 font-mono">
-                      ₦{Number(exp.amount).toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                    </span>
-                    {editingExpenseId !== exp.id && (
-                      <button
-                        onClick={() => {
-                          setEditingExpenseId(exp.id);
-                          setEditAmount(exp.amount.toString());
-                          setEditPlate(exp.vehicle_plate || '');
-                        }}
-                        className="text-[#0a7337] hover:text-[#085a2b] bg-green-50 hover:bg-green-100 px-2.5 py-1 rounded font-bold transition-colors"
-                      >
-                        Edit
-                      </button>
-                    )}
-                  </div>
-                </div>
-
-                {editingExpenseId === exp.id && (
-                  <div className="flex flex-col sm:flex-row gap-2 bg-slate-50 p-2 rounded-lg border border-slate-200 mt-1">
-                    {vehicleList.length > 0 ? (
-                      <select
-                        value={editPlate}
-                        onChange={(e) => setEditPlate(e.target.value)}
-                        className="w-full sm:w-36 p-2 text-xs border border-slate-300 rounded outline-none font-mono font-bold uppercase bg-white"
-                      >
-                        {vehicleList.map((v) => (
-                          <option key={v.id || v.plate_number} value={v.plate_number}>
-                            {v.plate_number}
-                          </option>
-                        ))}
-                      </select>
-                    ) : (
-                      <input
-                        type="text"
-                        value={editPlate}
-                        onChange={(e) => setEditPlate(e.target.value.toUpperCase())}
-                        placeholder="Plate No."
-                        className="w-full sm:w-28 p-2 text-xs border border-slate-300 rounded outline-none font-mono uppercase"
-                      />
-                    )}
-
-                    <div className="flex items-center gap-1.5 w-full sm:w-auto bg-white border border-slate-300 rounded px-2">
-                      <span className="text-slate-500 font-bold">₦</span>
-                      <input
-                        type="number"
-                        min="0"
-                        step="0.01"
-                        value={editAmount}
-                        onChange={(e) => setEditAmount(e.target.value)}
-                        className="w-full sm:w-24 p-2 text-xs font-bold text-slate-900 outline-none font-mono"
-                      />
-                    </div>
-                    <div className="flex items-center gap-2 sm:ml-auto w-full sm:w-auto">
-                      <button
-                        onClick={() => handleSaveEdit(exp.id)}
-                        disabled={isUpdating}
-                        className="flex-1 sm:flex-none bg-[#0a7337] hover:bg-[#085a2b] text-white px-3 py-2 rounded text-xs font-bold disabled:opacity-50"
-                      >
-                        {isUpdating ? '...' : 'Save'}
-                      </button>
-                      <button
-                        onClick={() => setEditingExpenseId(null)}
-                        className="flex-1 sm:flex-none bg-slate-200 hover:bg-slate-300 text-slate-700 px-3 py-2 rounded text-xs font-bold"
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
-            ))
-          )}
-        </div>
-      </div>
+    
 
       <ConfirmationModal
         isOpen={isModalOpen}

@@ -19,6 +19,7 @@ export default function NotificationFeed({ userId, userRole }: NotificationFeedP
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [unreadCount, setUnreadCount] = useState<number>(0);
   const [readIds, setReadIds] = useState<Set<number>>(new Set());
+  const [dismissedToastIds, setDismissedToastIds] = useState<Set<number>>(new Set());
   const [toastNotification, setToastNotification] = useState<NotificationItem | null>(null);
 
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -50,7 +51,9 @@ export default function NotificationFeed({ userId, userRole }: NotificationFeedP
       const data = await getNotificationsAction(userId, resolvedRole as any);
       if (Array.isArray(data)) {
         if (initialFetchDone.current) {
-          const latestUnread = data.find((n) => !n.is_read && !readIds.has(n.id));
+          // Exclude both read notifications AND explicitly dismissed toast notifications
+          const latestUnread = data.find((n) => !n.is_read && !readIds.has(n.id) && !dismissedToastIds.has(n.id));
+          
           if (latestUnread && (!toastNotification || toastNotification.id !== latestUnread.id)) {
             setToastNotification(latestUnread);
 
@@ -79,7 +82,7 @@ export default function NotificationFeed({ userId, userRole }: NotificationFeedP
       clearInterval(interval);
       if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
     };
-  }, [userId, resolvedRole, readIds]);
+  }, [userId, resolvedRole, readIds, dismissedToastIds]);
 
   // Close dropdown on outside click
   useEffect(() => {
@@ -103,6 +106,11 @@ export default function NotificationFeed({ userId, userRole }: NotificationFeedP
       localStorage.setItem(`read_notifications_${resolvedRole}`, JSON.stringify(Array.from(allIds)));
     } catch {}
     await markAllNotificationsReadAction(userId, resolvedRole as any);
+  };
+
+  const handleDismissToast = (id: number) => {
+    setDismissedToastIds((prev) => new Set(prev).add(id));
+    setToastNotification(null);
   };
 
   const getNotificationIcon = (title: string) => {
@@ -149,7 +157,7 @@ export default function NotificationFeed({ userId, userRole }: NotificationFeedP
                 </h4>
                 <button
                   type="button"
-                  onClick={() => setToastNotification(null)}
+                  onClick={() => handleDismissToast(toastNotification.id)}
                   className="text-slate-400 hover:text-slate-600 text-xs font-bold p-0.5"
                 >
                   ✕
@@ -165,7 +173,7 @@ export default function NotificationFeed({ userId, userRole }: NotificationFeedP
                 <button
                   type="button"
                   onClick={() => {
-                    setToastNotification(null);
+                    handleDismissToast(toastNotification.id);
                     setIsOpen(true);
                   }}
                   className="text-[11px] font-bold text-[#0a7337] hover:underline"

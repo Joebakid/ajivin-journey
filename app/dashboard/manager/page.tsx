@@ -75,14 +75,14 @@ async function ManagerDashboardContent({
 
     // 2. Pending trip clearance
     sql`
-      SELECT
-        t.id,
-        t.destination,
-        t.created_at,
+      SELECT 
+        t.id, 
+        t.destination, 
+        t.created_at, 
         t.driver_id,
         t.requester_id,
         t.scheduled_time,
-        u.name as driver_name,
+        u.name as driver_name, 
         u.phone as driver_phone,
         req.name as requester_name,
         req.phone as requester_phone
@@ -98,7 +98,7 @@ async function ManagerDashboardContent({
 
     // 4. Live personnel with active plate numbers AND current trip busy status
     sql`
-      SELECT
+      SELECT 
         u.id, u.name, u.email, u.role, u.phone, u.license_number, u.is_online, u.last_seen,
         v.plate_number, v.model as vehicle_model,
         EXISTS (
@@ -118,7 +118,7 @@ async function ManagerDashboardContent({
     // 5. Selected user profile
     selectedUserId
       ? sql`
-          SELECT
+          SELECT 
             u.id, u.name, u.email, u.role, u.phone, u.license_number, u.is_online,
             v.plate_number, v.model as vehicle_model
           FROM users u
@@ -133,10 +133,10 @@ async function ManagerDashboardContent({
       ? sql`SELECT * FROM trips WHERE driver_id = ${selectedUserId} ORDER BY created_at DESC`
       : Promise.resolve([] as any[]),
 
-    // 7. Selected driver combined expenses
+    // 7. Selected driver OR STAFF combined expenses (Using robust ILIKE wildcard matching for staff logging)
     selectedUserId
       ? sql`
-          SELECT
+          SELECT 
             e.id,
             e.expense_type,
             e.amount,
@@ -146,7 +146,7 @@ async function ManagerDashboardContent({
           FROM expenses e
           WHERE e.driver_id = ${selectedUserId}
           UNION ALL
-          SELECT
+          SELECT 
             ve.id + 2000000 as id,
             ve.expense_type,
             ve.amount,
@@ -154,15 +154,16 @@ async function ManagerDashboardContent({
             v.plate_number as vehicle_plate,
             ve.created_at
           FROM vehicle_expenses ve
-          JOIN vehicles v ON ve.vehicle_id = v.id
+          LEFT JOIN vehicles v ON ve.vehicle_id = v.id
           WHERE v.driver_id = ${selectedUserId}
+             OR ve.logged_by_name ILIKE (SELECT '%' || name || '%' FROM users WHERE id = ${selectedUserId} LIMIT 1)
           ORDER BY created_at DESC
         `
       : Promise.resolve([] as any[]),
 
     // 8. Fleet vehicles with assigned driver info
     sql`
-      SELECT
+      SELECT 
         v.id,
         v.driver_id,
         v.plate_number,
@@ -178,7 +179,7 @@ async function ManagerDashboardContent({
 
     // 9. All unified vehicle expenses
     sql`
-      SELECT
+      SELECT 
         ve.id,
         ve.vehicle_id,
         ve.expense_type,
@@ -188,7 +189,7 @@ async function ManagerDashboardContent({
         ve.created_at
       FROM vehicle_expenses ve
       UNION ALL
-      SELECT
+      SELECT 
         e.id + 1000000 as id,
         v.id as vehicle_id,
         e.expense_type,
@@ -207,14 +208,14 @@ async function ManagerDashboardContent({
 
     // 10. All Staff Trip Comments & Ratings
     sql`
-      SELECT
-        c.id,
-        c.trip_id,
-        c.user_name,
-        c.comment,
-        c.rating,
-        c.created_at,
-        t.destination
+      SELECT 
+        c.id, 
+        c.trip_id, 
+        c.user_name, 
+        c.comment, 
+        c.rating, 
+        c.created_at, 
+        t.destination 
       FROM trip_comments c
       LEFT JOIN trips t ON c.trip_id = t.id
       ORDER BY c.created_at DESC

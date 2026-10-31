@@ -116,13 +116,14 @@ async function DriverDashboardContent() {
     managerResult,
     allManagers,
     vehiclesResult,
-    driverHistoryResult // Fetching driver's personal trip log
+    driverHistoryResult,
+    driverExpensesResult, // Unified query for all expenses related to this driver or their vehicles
   ] = await Promise.all([
     sql`SELECT id, name, phone, license_number, role FROM users WHERE id = ${driverId}`,
 
     // Query active trip with passenger details and scheduled time
     sql`
-      SELECT
+      SELECT 
         t.*,
         req.name as requester_name,
         req.phone as requester_phone
@@ -142,11 +143,26 @@ async function DriverDashboardContent() {
     `,
     // Retrieve personal log of all trips for this specific driver
     sql`
-      SELECT id, destination, status, fasttrack_code, created_at
-      FROM trips
-      WHERE driver_id = ${driverId}
-      ORDER BY created_at DESC
+      SELECT id, destination, status, fasttrack_code, created_at 
+      FROM trips 
+      WHERE driver_id = ${driverId} 
+      ORDER BY created_at DESC 
       LIMIT 50
+    `,
+    // Retrieve consolidated expenses (Driver's manual logs + Staff/Manager fleet logs for assigned vehicles)
+    sql`
+      SELECT 
+        e.id, e.expense_type as category, e.amount, e.description, e.vehicle_plate as plate, u.name as logged_by, e.created_at
+      FROM expenses e
+      LEFT JOIN users u ON e.driver_id = u.id
+      WHERE e.driver_id = ${driverId}
+      UNION ALL
+      SELECT 
+        ve.id + 1000000 as id, ve.expense_type as category, ve.amount, ve.description, v.plate_number as plate, ve.logged_by_name as logged_by, ve.created_at
+      FROM vehicle_expenses ve
+      JOIN vehicles v ON ve.vehicle_id = v.id
+      WHERE v.driver_id = ${driverId}
+      ORDER BY created_at DESC
     `
   ]);
 
@@ -173,6 +189,10 @@ async function DriverDashboardContent() {
   const vehicles = vehiclesResult as any[];
   const activeVehicle = vehicles.find((v) => v.is_active) || vehicles[0] || null;
   const driverTrips = driverHistoryResult as any[];
+  const driverExpenses = driverExpensesResult as any[];
+
+  // Calculate Grand Total Expenditure
+  const totalSpent = driverExpenses.reduce((sum, exp) => sum + parseFloat(String(exp.amount || 0)), 0);
 
   const defaultVehicleDisplay = activeVehicle
     ? `${activeVehicle.model} (${activeVehicle.plate_number})`
@@ -373,6 +393,58 @@ async function DriverDashboardContent() {
         </div>
       </div>
 
+      {/* Driver's Unified Expenses & Repairs Log */}
+      <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+        <div className="p-5 bg-slate-50 border-b border-slate-200 flex justify-between items-center">
+          <div>
+            <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wider mb-1">Vehicle Expenses & Repairs</h3>
+            <span className="text-[10px] text-slate-500">History of all costs associated with your vehicle(s)</span>
+          </div>
+          <div className="text-right">
+            <span className="block text-[10px] uppercase font-bold text-slate-400">Total Spent</span>
+            <span className="text-base font-extrabold text-[#0a7337]">
+              ₦{totalSpent.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            </span>
+          </div>
+        </div>
+
+        {driverExpenses.length === 0 ? (
+          <div className="p-8 text-center text-xs text-slate-400">
+            No expenses or repairs have been logged for your assigned vehicles yet.
+          </div>
+        ) : (
+          <div className="p-4 space-y-3 max-h-[350px] overflow-y-auto">
+            {driverExpenses.map((exp) => (
+              <div key={exp.id} className="p-3 rounded-xl border border-slate-100 bg-white flex flex-col gap-2">
+                <div className="flex justify-between items-start gap-3">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="font-bold text-slate-900 text-sm truncate">{exp.category}</span>
+                      <span className="text-[9px] font-bold uppercase px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 border border-slate-200 shrink-0">
+                        {exp.plate || 'NO PLATE'}
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-500 line-clamp-2">{exp.description}</p>
+                    <div className="flex items-center gap-2 text-[10px] text-slate-400 mt-2">
+                      <span className="uppercase tracking-wider">
+                        By {exp.logged_by || 'System'}
+                      </span>
+                      <span>•</span>
+                      <span>{new Date(exp.created_at).toLocaleDateString()}</span>
+                    </div>
+                  </div>
+                  <div className="text-right shrink-0">
+                    <span className="block font-mono font-bold text-[#0a7337] text-sm">
+                      ₦{parseFloat(String(exp.amount)).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
       {/* Driver's Personal Trip Log */}
       <div className="bg-white rounded-2xl p-5 shadow-sm border border-slate-200">
         <div className="flex justify-between items-center mb-4">
@@ -381,7 +453,7 @@ async function DriverDashboardContent() {
             {driverTrips.length} Trips
           </span>
         </div>
-
+        
         {driverTrips.length === 0 ? (
           <div className="py-6 text-center text-xs text-slate-400 border border-dashed border-slate-200 rounded-xl">
             You haven't logged any trips yet.
