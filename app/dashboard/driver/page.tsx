@@ -12,7 +12,7 @@ import MapSwitcher from '@/app/components/MapSwitcher';
 import EndTripButton from '@/app/components/EndTripButton';
 import Vehicle from '@/app/components/Vehicle';
 import { ensureVehiclesTable } from '@/app/actions/vehicle';
-import { cancelTripAction, startTripAction } from '@/app/actions/trip';
+import { cancelTripAction, startTripAction, endTripAction } from '@/app/actions/trip';
 
 function statusClasses(status: string) {
   if (status === 'Completed') return 'bg-green-50 text-[#0a7337] border-green-200';
@@ -23,15 +23,23 @@ function statusClasses(status: string) {
 }
 
 // Minimal Server-Side Pagination Component
-function SimplePagination({ view, currentPage, totalPages }: { view: string, currentPage: number, totalPages: number }) {
+function SimplePagination({
+  view,
+  currentPage,
+  totalPages,
+}: {
+  view: string;
+  currentPage: number;
+  totalPages: number;
+}) {
   if (totalPages <= 1) return null;
   return (
     <div className="flex items-center justify-between pt-6 border-t border-gray-100 mt-4">
       <Link
         href={`?view=${view}&page=${currentPage - 1}`}
         className={`px-4 py-2 text-sm font-medium rounded-xl transition-all ${
-          currentPage <= 1 
-            ? 'text-gray-300 pointer-events-none' 
+          currentPage <= 1
+            ? 'text-gray-300 pointer-events-none'
             : 'text-gray-600 bg-gray-50 hover:bg-gray-100 active:scale-95'
         }`}
       >
@@ -43,8 +51,8 @@ function SimplePagination({ view, currentPage, totalPages }: { view: string, cur
       <Link
         href={`?view=${view}&page=${currentPage + 1}`}
         className={`px-4 py-2 text-sm font-medium rounded-xl transition-all ${
-          currentPage >= totalPages 
-            ? 'text-gray-300 pointer-events-none' 
+          currentPage >= totalPages
+            ? 'text-gray-300 pointer-events-none'
             : 'text-gray-600 bg-gray-50 hover:bg-gray-100 active:scale-95'
         }`}
       >
@@ -87,47 +95,39 @@ async function submitJourneyRequest(formData: FormData) {
   }
 }
 
-async function endTripAction(formData: FormData) {
+async function handleCancelTrip(formData: FormData) {
   'use server';
-
   const tripId = parseInt(formData.get('trip_id') as string, 10);
-  const driverId = parseInt(formData.get('driver_id') as string, 10);
-  if (!tripId || !driverId) return;
-
-  try {
-    const updated = await sql`
-      UPDATE trips
-      SET status = 'Completed', ended_at = NOW()
-      WHERE id = ${tripId}
-        AND driver_id = ${driverId}
-        AND status IN ('Active', 'En Route')
-      RETURNING id, destination
-    `;
-
-    if (updated.length > 0) {
-      const driverRows = await sql`SELECT name FROM users WHERE id = ${driverId}`;
-      const driverName = driverRows[0]?.name || 'Driver';
-      const place = String(updated[0].destination).split(' (')[0];
-
-      await sql`
-        INSERT INTO notifications (title, message, target_role)
-        VALUES (
-          'Trip Completed',
-          ${`${driverName} has ended the trip to ${place} (TRP-${tripId}).`},
-          'manager'
-        )
-      `;
-    }
-  } catch (error) {
-    console.error('Failed to end trip:', error);
+  if (tripId) {
+    await cancelTripAction(tripId);
+    revalidatePath('/dashboard/driver');
+    revalidatePath('/dashboard/manager');
   }
-
-  revalidatePath('/dashboard/driver');
-  revalidatePath('/dashboard/manager');
-  revalidatePath('/dashboard/staff');
 }
 
-async function DriverDashboardContent({ activeView, currentPage }: { activeView: string, currentPage: number }) {
+async function handleStartTrip(formData: FormData) {
+  'use server';
+  const tripId = parseInt(formData.get('trip_id') as string, 10);
+  if (tripId) {
+    await startTripAction(tripId);
+    revalidatePath('/dashboard/driver');
+    revalidatePath('/dashboard/manager');
+  }
+}
+
+async function handleEndTrip(formData: FormData) {
+  'use server';
+  // Use the globally imported action so notifications and routing apply safely
+  await endTripAction(formData);
+}
+
+async function DriverDashboardContent({
+  activeView,
+  currentPage,
+}: {
+  activeView: string;
+  currentPage: number;
+}) {
   const cookieStore = await cookies();
   const rawUserId = cookieStore.get('userId')?.value || cookieStore.get('ajivin_session_id')?.value;
   const driverId = rawUserId ? parseInt(rawUserId, 10) : null;
@@ -203,13 +203,21 @@ async function DriverDashboardContent({ activeView, currentPage }: { activeView:
 
   const driver = currentUser;
   const currentTrip = tripResult[0] || null;
-  const manager = managerResult[0] || { id: 2, name: 'Dispatch Manager', role: 'Logistics Manager', phone: null };
+  const manager = managerResult[0] || {
+    id: 2,
+    name: 'Dispatch Manager',
+    role: 'Logistics Manager',
+    phone: null,
+  };
   const vehicles = vehiclesResult as any[];
   const activeVehicle = vehicles.find((v) => v.is_active) || vehicles[0] || null;
   const driverTrips = driverHistoryResult as any[];
   const driverExpenses = driverExpensesResult as any[];
 
-  const totalSpent = driverExpenses.reduce((sum, exp) => sum + parseFloat(String(exp.amount || 0)), 0);
+  const totalSpent = driverExpenses.reduce(
+    (sum, exp) => sum + parseFloat(String(exp.amount || 0)),
+    0
+  );
 
   const defaultVehicleDisplay = activeVehicle
     ? `${activeVehicle.model} (${activeVehicle.plate_number})`
@@ -218,20 +226,21 @@ async function DriverDashboardContent({ activeView, currentPage }: { activeView:
   // Pagination Logic
   const itemsPerPage = 8;
   const historyPages = Math.ceil(driverTrips.length / itemsPerPage);
-  const paginatedTrips = driverTrips.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
+  const paginatedTrips = driverTrips.slice(
+    (currentPage - 1) * itemsPerPage,
+    currentPage * itemsPerPage
+  );
 
   const expensesPages = Math.ceil(driverExpenses.length / itemsPerPage);
-  const paginatedExpenses = driverExpenses.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
+  const paginatedExpenses = driverExpenses.slice(
+    (currentPage - 1) * itemsPerPage,
+    currentPage * itemsPerPage
+  );
 
   return (
     <div className="w-full flex justify-center p-4 sm:p-6 pb-20">
-      {/* 
-        APPLE-STYLE WRAPPER: 
-        max-w-3xl keeps the UI tight and focused. 
-        mx-auto centers it nicely.
-      */}
+      {/* max-w-3xl keeps the UI tight and focused, mx-auto centers it */}
       <div className="max-w-3xl w-full space-y-6">
-        
         {/* PAGE 1: CURRENT JOURNEY & NEW REQUEST */}
         {activeView === 'journey' && (
           <div className="space-y-6">
@@ -240,10 +249,18 @@ async function DriverDashboardContent({ activeView, currentPage }: { activeView:
                 <div className="space-y-6">
                   <div className="flex justify-between items-start">
                     <div>
-                      <p className="text-[11px] font-bold text-gray-400 uppercase tracking-widest mb-1.5">Current Journey</p>
-                      <h2 className="text-2xl font-bold text-gray-900 tracking-tight">{currentTrip.destination.split(' (')[0]}</h2>
+                      <p className="text-[11px] font-bold text-gray-400 uppercase tracking-widest mb-1.5">
+                        Current Journey
+                      </p>
+                      <h2 className="text-2xl font-bold text-gray-900 tracking-tight">
+                        {currentTrip.destination.split(' (')[0]}
+                      </h2>
                     </div>
-                    <span className={`text-xs font-semibold px-3 py-1 rounded-full border ${statusClasses(currentTrip.status)}`}>
+                    <span
+                      className={`text-xs font-semibold px-3 py-1 rounded-full border ${statusClasses(
+                        currentTrip.status
+                      )}`}
+                    >
                       {currentTrip.status}
                     </span>
                   </div>
@@ -255,7 +272,9 @@ async function DriverDashboardContent({ activeView, currentPage }: { activeView:
                     </div>
                     <div className="flex justify-between items-center">
                       <span className="text-gray-500 font-medium">FastTrack Code</span>
-                      <span className="font-semibold text-[#0a7337]">{currentTrip.fasttrack_code || 'Pending Clearance'}</span>
+                      <span className="font-semibold text-[#0a7337]">
+                        {currentTrip.fasttrack_code || 'Pending Clearance'}
+                      </span>
                     </div>
                     <div className="flex justify-between items-center">
                       <span className="text-gray-500 font-medium">Scheduled Time</span>
@@ -281,12 +300,8 @@ async function DriverDashboardContent({ activeView, currentPage }: { activeView:
                       <div className="p-4 bg-orange-50 rounded-2xl text-sm text-orange-800 font-medium text-center">
                         Waiting for Logistics Manager to clear this trip request.
                       </div>
-                      <form
-                        action={async () => {
-                          'use server';
-                          await cancelTripAction(currentTrip.id);
-                        }}
-                      >
+                      <form action={handleCancelTrip}>
+                        <input type="hidden" name="trip_id" value={currentTrip.id} />
                         <button
                           type="submit"
                           className="w-full bg-red-50 hover:bg-red-100 text-red-600 font-semibold py-3.5 rounded-2xl text-sm transition-all active:scale-95"
@@ -305,12 +320,8 @@ async function DriverDashboardContent({ activeView, currentPage }: { activeView:
                           Scheduled for <strong>{currentTrip.scheduled_time || 'Immediate'}</strong>.
                         </p>
                       </div>
-                      <form
-                        action={async () => {
-                          'use server';
-                          await startTripAction(currentTrip.id);
-                        }}
-                      >
+                      <form action={handleStartTrip}>
+                        <input type="hidden" name="trip_id" value={currentTrip.id} />
                         <button
                           type="submit"
                           className="w-full bg-[#0a7337] hover:bg-[#085a2b] text-white font-semibold py-4 rounded-2xl text-sm transition-all shadow-[0_4px_14px_rgba(10,115,55,0.3)] active:scale-95"
@@ -336,12 +347,12 @@ async function DriverDashboardContent({ activeView, currentPage }: { activeView:
                         <p className="text-xs text-gray-500 text-center font-medium">
                           Tap End Trip when you arrive. Your manager and passenger will be notified.
                         </p>
-                        <form action={endTripAction}>
+                        {/* FIX: no transform wrapper around EndTripButton, so the modal's
+                            position: fixed is relative to the viewport again */}
+                        <form action={handleEndTrip}>
                           <input type="hidden" name="trip_id" value={currentTrip.id} />
                           <input type="hidden" name="driver_id" value={driverId} />
-                          <div className="transform transition-all active:scale-95">
-                            <EndTripButton />
-                          </div>
+                          <EndTripButton />
                         </form>
                       </div>
                     </div>
@@ -350,14 +361,20 @@ async function DriverDashboardContent({ activeView, currentPage }: { activeView:
               ) : (
                 <div>
                   <div className="mb-6 text-center">
-                    <h3 className="text-2xl font-bold text-gray-900 tracking-tight">Request Journey</h3>
-                    <p className="text-sm text-gray-500 mt-1">Submit trip details for manager clearance.</p>
+                    <h3 className="text-2xl font-bold text-gray-900 tracking-tight">
+                      Request Journey
+                    </h3>
+                    <p className="text-sm text-gray-500 mt-1">
+                      Submit trip details for manager clearance.
+                    </p>
                   </div>
                   <form action={submitJourneyRequest} className="space-y-5">
                     <input type="hidden" name="driver_id" value={driverId} />
-                    
+
                     <div className="space-y-1.5">
-                      <label className="text-[11px] font-bold text-gray-500 uppercase tracking-wider ml-1">Destination</label>
+                      <label className="text-[11px] font-bold text-gray-500 uppercase tracking-wider ml-1">
+                        Destination
+                      </label>
                       <input
                         name="destination"
                         type="text"
@@ -366,9 +383,11 @@ async function DriverDashboardContent({ activeView, currentPage }: { activeView:
                         placeholder="e.g., Apapa Port Complex"
                       />
                     </div>
-                    
+
                     <div className="space-y-1.5">
-                      <label className="text-[11px] font-bold text-gray-500 uppercase tracking-wider ml-1">Vehicle Name / Plate</label>
+                      <label className="text-[11px] font-bold text-gray-500 uppercase tracking-wider ml-1">
+                        Vehicle Name / Plate
+                      </label>
                       <input
                         name="vehicle"
                         type="text"
@@ -378,9 +397,11 @@ async function DriverDashboardContent({ activeView, currentPage }: { activeView:
                         placeholder="e.g. Mack Truck (KJA-991)"
                       />
                     </div>
-                    
+
                     <div className="space-y-1.5">
-                      <label className="text-[11px] font-bold text-gray-500 uppercase tracking-wider ml-1">Purpose</label>
+                      <label className="text-[11px] font-bold text-gray-500 uppercase tracking-wider ml-1">
+                        Purpose
+                      </label>
                       <textarea
                         name="purpose"
                         rows={3}
@@ -389,7 +410,7 @@ async function DriverDashboardContent({ activeView, currentPage }: { activeView:
                         placeholder="Details about cargo or delivery..."
                       ></textarea>
                     </div>
-                    
+
                     <button
                       type="submit"
                       className="w-full bg-[#0a7337] hover:bg-[#085a2b] text-white font-semibold py-4 rounded-2xl transition-all shadow-[0_4px_14px_rgba(10,115,55,0.2)] active:scale-95 text-sm mt-4"
@@ -404,18 +425,29 @@ async function DriverDashboardContent({ activeView, currentPage }: { activeView:
             {/* Driver Summary Mini Widget */}
             <div className="bg-white rounded-2xl p-5 sm:p-6 shadow-[0_2px_10px_rgba(0,0,0,0.02)] border border-gray-100">
               <div className="flex justify-between items-center mb-4">
-                <h3 className="text-[11px] font-bold text-gray-400 uppercase tracking-widest">Driver Summary</h3>
-                <Link href="/dashboard/profile" className="text-xs font-semibold text-[#0a7337] hover:underline">
+                <h3 className="text-[11px] font-bold text-gray-400 uppercase tracking-widest">
+                  Driver Summary
+                </h3>
+                <Link
+                  href="/dashboard/profile"
+                  className="text-xs font-semibold text-[#0a7337] hover:underline"
+                >
                   Edit Profile
                 </Link>
               </div>
               <div className="flex justify-between items-center text-sm">
                 <div>
-                  <span className="block text-gray-400 text-[10px] uppercase font-semibold tracking-wider mb-0.5">License No.</span>
-                  <span className="font-semibold text-gray-900">{driver.license_number || 'Not Set'}</span>
+                  <span className="block text-gray-400 text-[10px] uppercase font-semibold tracking-wider mb-0.5">
+                    License No.
+                  </span>
+                  <span className="font-semibold text-gray-900">
+                    {driver.license_number || 'Not Set'}
+                  </span>
                 </div>
                 <div className="text-right">
-                  <span className="block text-gray-400 text-[10px] uppercase font-semibold tracking-wider mb-0.5">Phone</span>
+                  <span className="block text-gray-400 text-[10px] uppercase font-semibold tracking-wider mb-0.5">
+                    Phone
+                  </span>
                   <span className="font-semibold text-gray-900">{driver.phone || 'Not Set'}</span>
                 </div>
               </div>
@@ -442,9 +474,15 @@ async function DriverDashboardContent({ activeView, currentPage }: { activeView:
                 </span>
               </div>
               <div className="bg-white px-4 py-2 rounded-xl border border-gray-100 shadow-sm text-right w-full sm:w-auto">
-                <span className="block text-[10px] uppercase font-bold text-gray-400 tracking-wider">Total Spent</span>
+                <span className="block text-[10px] uppercase font-bold text-gray-400 tracking-wider">
+                  Total Spent
+                </span>
                 <span className="text-lg font-bold text-[#0a7337]">
-                  ₦{totalSpent.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  ₦
+                  {totalSpent.toLocaleString(undefined, {
+                    minimumFractionDigits: 2,
+                    maximumFractionDigits: 2,
+                  })}
                 </span>
               </div>
             </div>
@@ -457,7 +495,10 @@ async function DriverDashboardContent({ activeView, currentPage }: { activeView:
               ) : (
                 <div className="space-y-3">
                   {paginatedExpenses.map((exp) => (
-                    <div key={exp.id} className="p-4 rounded-2xl border border-gray-100 bg-white flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 transition-colors hover:border-gray-200 hover:shadow-sm">
+                    <div
+                      key={exp.id}
+                      className="p-4 rounded-2xl border border-gray-100 bg-white flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 transition-colors hover:border-gray-200 hover:shadow-sm"
+                    >
                       <div className="min-w-0">
                         <div className="flex items-center gap-2 mb-1.5">
                           <span className="font-semibold text-gray-900 text-sm">{exp.category}</span>
@@ -465,23 +506,30 @@ async function DriverDashboardContent({ activeView, currentPage }: { activeView:
                             {exp.plate || 'NO PLATE'}
                           </span>
                         </div>
-                        <p className="text-xs text-gray-500 leading-relaxed mb-2">{exp.description}</p>
+                        <p className="text-xs text-gray-500 leading-relaxed mb-2">
+                          {exp.description}
+                        </p>
                         <div className="flex items-center gap-2 text-[10px] text-gray-400 font-medium">
-                          <span className="uppercase tracking-wider">By {exp.logged_by || 'System'}</span>
+                          <span className="uppercase tracking-wider">
+                            By {exp.logged_by || 'System'}
+                          </span>
                           <span>•</span>
                           <span>{new Date(exp.created_at).toLocaleDateString()}</span>
                         </div>
                       </div>
                       <div className="text-left sm:text-right shrink-0 mt-2 sm:mt-0">
                         <span className="block font-medium text-[#0a7337] text-base">
-                          ₦{parseFloat(String(exp.amount)).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                          ₦
+                          {parseFloat(String(exp.amount)).toLocaleString(undefined, {
+                            minimumFractionDigits: 2,
+                          })}
                         </span>
                       </div>
                     </div>
                   ))}
                 </div>
               )}
-              
+
               <SimplePagination view="expenses" currentPage={currentPage} totalPages={expensesPages} />
             </div>
           </div>
@@ -519,13 +567,18 @@ async function DriverDashboardContent({ activeView, currentPage }: { activeView:
                           <span>{new Date(trip.created_at).toLocaleDateString()}</span>
                         </div>
                       </div>
-                      <span className={`px-3 py-1 rounded-full font-semibold text-[10px] border shrink-0 ${statusClasses(trip.status)}`}>
+                      <span
+                        className={`px-3 py-1 rounded-full font-semibold text-[10px] border shrink-0 ${statusClasses(
+                          trip.status
+                        )}`}
+                      >
                         {trip.status}
                       </span>
                     </div>
                     {trip.fasttrack_code && (
                       <div className="text-[11px] text-gray-500 font-medium bg-gray-50 p-2.5 rounded-xl inline-block mt-1 border border-gray-100">
-                        FastTrack Code: <strong className="text-gray-800 ml-1">{trip.fasttrack_code}</strong>
+                        FastTrack Code:{' '}
+                        <strong className="text-gray-800 ml-1">{trip.fasttrack_code}</strong>
                       </div>
                     )}
                   </div>
@@ -544,7 +597,9 @@ async function DriverDashboardContent({ activeView, currentPage }: { activeView:
               senderId={driverId}
               receiverId={manager.id}
               recipientName={`${manager.name} (${manager.role})`}
-              personnelList={allManagers as { id: number; name: string; role: string; phone?: string | null }[]}
+              personnelList={
+                allManagers as { id: number; name: string; role: string; phone?: string | null }[]
+              }
             />
           </div>
         )}
