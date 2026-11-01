@@ -3,19 +3,13 @@ import { sql } from '@/src/lib/db';
 import { cookies } from 'next/headers';
 import { redirect } from 'next/navigation';
 import Link from 'next/link';
-import Container from '@/app/components/Container';
 import Loader from '@/app/components/Loader';
 import ChatSystem from '@/app/components/ChatSystem';
-import OnlineTracker from '@/app/components/OnlineTracker';
-import DashboardLayout from '@/app/components/DashboardLayout';
 import PersonnelActivityViewer from '@/app/components/PersonnelActivityViewer';
 import LivePersonnelTracker from '@/app/components/LivePersonnelTracker';
 import PendingApprovals from '@/app/components/PendingApprovals';
 import ActiveJourneys from '@/app/components/ActiveJourneys';
 import AutoRefresh from '@/app/components/AutoRefresh';
-import CallManager from '@/app/components/CallManager';
-import UnreadBadge from '@/app/components/UnreadBadge';
-import Nav from '@/app/components/Nav';
 import CreatePersonnelModal from '@/app/components/CreatePersonnelModal';
 import VehicleFleetManager from '@/app/components/VehicleFleetManager';
 import { ensureVehiclesTable } from '@/app/actions/vehicle';
@@ -40,7 +34,7 @@ async function loadActiveTrips(): Promise<any[]> {
 async function ManagerDashboardContent({
   searchParams,
 }: {
-  searchParams: Promise<{ userId?: string; tripId?: string }>;
+  searchParams: Promise<{ userId?: string; tripId?: string; view?: string }>;
 }) {
   const cookieStore = await cookies();
   const rawUserId = cookieStore.get('userId')?.value || cookieStore.get('ajivin_session_id')?.value;
@@ -58,6 +52,13 @@ async function ManagerDashboardContent({
   const selectedUserId = resolvedParams.userId ? parseInt(resolvedParams.userId, 10) : null;
   const selectedTripId = resolvedParams.tripId ? parseInt(resolvedParams.tripId, 10) : null;
 
+  // Smart View Routing: Default to approvals, but override if a specific deep link (userId/tripId) is present
+  let activeView = resolvedParams.view || 'approvals';
+  if (!resolvedParams.view) {
+    if (selectedUserId) activeView = 'personnel';
+    else if (selectedTripId) activeView = 'active';
+  }
+
   const [
     managerResult,
     pendingTrips,
@@ -69,6 +70,7 @@ async function ManagerDashboardContent({
     vehiclesResult,
     vehicleExpensesResult,
     tripCommentsResult,
+    notificationsResult,
   ] = await Promise.all([
     // 1. Verify manager authorization
     sql`SELECT id, name, email, role, phone FROM users WHERE id = ${authUserId} AND role = 'manager' LIMIT 1`,
@@ -219,6 +221,15 @@ async function ManagerDashboardContent({
       FROM trip_comments c
       LEFT JOIN trips t ON c.trip_id = t.id
       ORDER BY c.created_at DESC
+    `,
+
+    // 11. Notifications for Manager
+    sql`
+      SELECT id, title, message, created_at, is_read 
+      FROM notifications 
+      WHERE target_role = 'manager' 
+      ORDER BY created_at DESC 
+      LIMIT 30
     `
   ]);
 
@@ -229,6 +240,12 @@ async function ManagerDashboardContent({
   const manager = managerResult[0];
   const managerId = manager.id;
   const selectedUser = (selectedUserRows as any[])[0] || null;
+  const notifications = notificationsResult as any[];
+
+  // Mark notifications as read in the background if the manager is currently viewing them
+  if (activeView === 'notifications' && notifications.some(n => !n.is_read)) {
+    sql`UPDATE notifications SET is_read = TRUE WHERE target_role = 'manager' AND is_read = FALSE`.catch(console.error);
+  }
 
   const chatPersonnel = (initialPersonnel as any[])
     .filter((p) => p.id !== managerId)
@@ -264,103 +281,152 @@ async function ManagerDashboardContent({
       ? activeTrips.find((t) => t.driver_id === selectedUserId)?.id ?? null
       : null;
 
-  const tab1Content = (
-    <div className="space-y-6">
-      <div className="bg-white rounded-2xl p-4 shadow-sm border border-slate-200 relative">
-        <div className="flex justify-between items-center mb-3 border-b border-slate-100 pb-2">
-          <h3 className="text-xs font-bold text-slate-800 uppercase">My Profile</h3>
-          <Link
-            href="/dashboard/profile"
-            className="text-xs font-bold text-[#0a7337] hover:underline flex items-center gap-1"
-          >
-            Edit
-          </Link>
-        </div>
-        <div className="flex justify-between text-sm">
-          <div>
-            <span className="block text-slate-500 text-[10px] uppercase tracking-wider mb-1">Email Address</span>
-            <span className="font-bold text-slate-900">{manager.email}</span>
-          </div>
-          <div className="text-right">
-            <span className="block text-slate-500 text-[10px] uppercase tracking-wider mb-1">Phone</span>
-            <span className="font-bold text-slate-900">{manager.phone || 'Not Set'}</span>
-          </div>
-        </div>
-      </div>
-
-      <VehicleFleetManager
-        vehicles={vehiclesResult as any[]}
-        expenses={vehicleExpensesResult as any[]}
-        drivers={driversList}
-      />
-
-      <PendingApprovals
-        initialTrips={pendingTrips as any}
-        drivers={driversList as any}
-      />
-
-      {!selectedUserId && (
-        <ActiveJourneys trips={activeTrips as any} initialTripId={initialTripId} />
-      )}
-
-      <div className="space-y-3">
-        <div className="flex justify-between items-center px-1">
-          <h3 className="text-xs font-bold text-slate-700 uppercase tracking-wider">Fleet Personnel</h3>
-          <CreatePersonnelModal />
-        </div>
-        <LivePersonnelTracker initialPersonnel={initialPersonnel as any} />
-      </div>
-    </div>
-  );
-
   return (
-    <div className="min-h-[calc(100vh-60px)] bg-slate-50 flex flex-col md:bg-gray-100">
-      <OnlineTracker userId={managerId} />
+    <div className="w-full flex justify-center p-4 sm:p-6 pb-20 relative">
+      {/* Essential Manager Utilities */}
       <AutoRefresh intervalMs={15000} />
-      <CallManager userId={managerId} />
 
-      <Nav userId={managerId} userName={manager.name} userRole="manager" />
+      {/* APPLE-STYLE WRAPPER */}
+      <div className="max-w-3xl w-full space-y-6">
 
-      <Container className="flex-1 flex flex-col p-0 md:p-6 md:pt-0 min-h-0">
-        <DashboardLayout
-          initialTab={selectedUserId && !selectedTripId ? 'tab2' : 'tab1'}
-          tab1Label="Overview"
-          tab1Content={tab1Content}
-          tab2Label="Details & Activity"
-          tab2Content={
-            <PersonnelActivityViewer
-              key={selectedUser ? (selectedUser as any).id : 'none'}
-              user={selectedUser as any}
-              trips={userTrips as any[]}
-              expenses={userExpenses as any[]}
-              comments={tripCommentsResult as any[]}
+        {/* PAGE 1: PENDING CLEARANCES (Approvals) */}
+        {activeView === 'approvals' && (
+          <div className="space-y-6">
+            <div className="mb-2 text-center sm:text-left">
+              <h3 className="text-2xl font-bold text-gray-900 tracking-tight">Pending Clearances</h3>
+              <p className="text-sm text-gray-500 mt-1">Review and approve journey requests from staff.</p>
+            </div>
+            <PendingApprovals initialTrips={pendingTrips as any} drivers={driversList as any} />
+          </div>
+        )}
+
+        {/* PAGE 2: ACTIVE JOURNEYS & LIVE MAP */}
+        {activeView === 'active' && (
+          <div className="space-y-6">
+            <div className="mb-2 text-center sm:text-left">
+              <h3 className="text-2xl font-bold text-gray-900 tracking-tight">Active Journeys & Live Map</h3>
+              <p className="text-sm text-gray-500 mt-1">Track ongoing fleet trips in real-time.</p>
+            </div>
+            <ActiveJourneys trips={activeTrips as any} initialTripId={initialTripId} />
+          </div>
+        )}
+
+        {/* PAGE 3: VEHICLE FLEET & EXPENSES */}
+        {activeView === 'fleet' && (
+          <div className="space-y-6">
+            <div className="mb-2 text-center sm:text-left">
+              <h3 className="text-2xl font-bold text-gray-900 tracking-tight">Vehicle Fleet & Expenses</h3>
+              <p className="text-sm text-gray-500 mt-1">Manage vehicles, assign drivers, and monitor fleet expenses.</p>
+            </div>
+            <VehicleFleetManager
+              vehicles={vehiclesResult as any[]}
+              expenses={vehicleExpensesResult as any[]}
+              drivers={driversList}
             />
-          }
-          tab3Label="Chat"
-          tab3Badge={<UnreadBadge userId={managerId} />}
-          tab3Content={
+          </div>
+        )}
+
+        {/* PAGE 4: PERSONNEL & ACTIVITY */}
+        {activeView === 'personnel' && (
+          <div className="space-y-6">
+            {!selectedUserId ? (
+              <>
+                <div className="flex flex-col sm:flex-row justify-between items-center gap-4 mb-2">
+                  <div className="text-center sm:text-left">
+                    <h3 className="text-2xl font-bold text-gray-900 tracking-tight">Personnel Directory</h3>
+                    <p className="text-sm text-gray-500 mt-1">Manage drivers, staff, and view activity history.</p>
+                  </div>
+                  <CreatePersonnelModal />
+                </div>
+                <LivePersonnelTracker initialPersonnel={initialPersonnel as any} />
+              </>
+            ) : (
+              <div className="space-y-4">
+                <div className="flex items-center gap-2">
+                  <Link href="/dashboard/manager?view=personnel" className="inline-flex items-center text-sm font-semibold text-gray-500 hover:text-[#0a7337] transition-colors bg-white px-4 py-2 rounded-xl border border-gray-100 shadow-sm active:scale-95">
+                    &larr; Back to Directory
+                  </Link>
+                </div>
+                <PersonnelActivityViewer
+                  key={selectedUser.id}
+                  user={selectedUser as any}
+                  trips={userTrips as any[]}
+                  expenses={userExpenses as any[]}
+                  comments={tripCommentsResult as any[]}
+                />
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* PAGE 5: NOTIFICATIONS FEED */}
+        {activeView === 'notifications' && (
+          <div className="space-y-6">
+            <div className="mb-2 text-center sm:text-left">
+              <h3 className="text-2xl font-bold text-gray-900 tracking-tight">Notifications Feed</h3>
+              <p className="text-sm text-gray-500 mt-1">Recent alerts, trip completions, and system updates.</p>
+            </div>
+            
+            <div className="bg-white rounded-3xl p-6 shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-gray-100">
+              {notifications.length === 0 ? (
+                <div className="py-12 text-center text-sm font-medium text-gray-400 border border-dashed border-gray-200 rounded-2xl">
+                  You have no new notifications.
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {notifications.map(notification => (
+                    <div 
+                      key={notification.id} 
+                      className={`p-4 rounded-2xl border flex flex-col gap-1.5 transition-colors ${
+                        notification.is_read 
+                          ? 'bg-white border-gray-100' 
+                          : 'bg-blue-50/50 border-blue-100 shadow-sm'
+                      }`}
+                    >
+                      <div className="flex justify-between items-start gap-4">
+                        <span className="text-sm font-bold text-gray-900">{notification.title}</span>
+                        {!notification.is_read && (
+                          <span className="w-2 h-2 rounded-full bg-blue-600 shrink-0 mt-1.5"></span>
+                        )}
+                      </div>
+                      <span className="text-xs text-gray-600 leading-relaxed">{notification.message}</span>
+                      <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mt-1">
+                        {new Date(notification.created_at).toLocaleString()}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* PAGE 6: DISPATCH CHAT */}
+        {activeView === 'chat' && (
+          <div className="h-[calc(100vh-140px)] bg-white rounded-[24px] shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-gray-100 overflow-hidden flex flex-col">
             <ChatSystem
               senderId={managerId}
               receiverId={0}
               recipientName="Fleet Broadcast"
               personnelList={chatPersonnel}
             />
-          }
-        />
-      </Container>
+          </div>
+        )}
+
+      </div>
     </div>
   );
 }
 
-export default function ManagerDashboardPage({
+export default async function ManagerDashboardPage({
   searchParams,
 }: {
-  searchParams: Promise<{ userId?: string; tripId?: string }>;
+  searchParams: Promise<{ userId?: string; tripId?: string; view?: string }>;
 }) {
   return (
     <Suspense
       fallback={
-        <div className="min-h-screen flex items-center justify-center">
+        <div className="min-h-[60vh] flex items-center justify-center">
           <Loader text="Loading dispatch board..." />
         </div>
       }

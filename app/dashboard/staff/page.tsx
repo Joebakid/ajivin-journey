@@ -2,18 +2,13 @@ import { Suspense } from 'react';
 import { sql } from '@/src/lib/db';
 import { cookies } from 'next/headers';
 import { redirect } from 'next/navigation';
-import Container from '@/app/components/Container';
 import Loader from '@/app/components/Loader';
 import ChatSystem from '@/app/components/ChatSystem';
-import OnlineTracker from '@/app/components/OnlineTracker';
-import DashboardLayout from '@/app/components/DashboardLayout';
-import CallManager from '@/app/components/CallManager';
-import UnreadBadge from '@/app/components/UnreadBadge';
-import Nav from '@/app/components/Nav';
+import MapSwitcher from '@/app/components/MapSwitcher';
 import StaffDashboardClient from '@/app/components/StaffDashboardClient';
 import { ensureStaffTables } from '@/app/actions/staff';
 
-async function StaffDashboardContent() {
+async function StaffDashboardContent({ activeView }: { activeView: string }) {
   const cookieStore = await cookies();
   const rawUserId = cookieStore.get('userId')?.value || cookieStore.get('ajivin_session_id')?.value;
   const staffId = rawUserId ? parseInt(rawUserId, 10) : null;
@@ -40,20 +35,14 @@ async function StaffDashboardContent() {
   const userRole = (currentUser.role || '').toLowerCase();
 
   // Smart role guards
-  if (userRole === 'manager') {
-    redirect('/dashboard/manager');
-  }
-  if (userRole === 'driver') {
-    redirect('/dashboard/driver');
-  }
-  if (userRole !== 'staff') {
-    redirect('/login');
-  }
+  if (userRole === 'manager') redirect('/dashboard/manager');
+  if (userRole === 'driver') redirect('/dashboard/driver');
+  if (userRole !== 'staff') redirect('/login');
 
   const staff = currentUser;
 
   // 2. Load staff data in parallel
-  const [tripsResult, commentsResult, vehiclesResult, personnelResult] = await Promise.all([
+  const [tripsResult, commentsResult, vehiclesResult, personnelResult, currentTripResult] = await Promise.all([
     // Trips requested by this staff member
     sql`
       SELECT id, destination, status, fasttrack_code, created_at 
@@ -61,21 +50,18 @@ async function StaffDashboardContent() {
       WHERE requester_id = ${staffId}
       ORDER BY created_at DESC
     `,
-
     // All journey feedback comments
     sql`
       SELECT id, trip_id, user_name, comment, rating, created_at 
       FROM trip_comments 
       ORDER BY created_at DESC
     `,
-
     // Fleet vehicles available for expense reporting
     sql`
       SELECT id, plate_number, model 
       FROM vehicles 
       ORDER BY plate_number ASC
     `,
-
     // Directory of personnel for universal chat and driver lookup
     sql`
       SELECT 
@@ -85,7 +71,18 @@ async function StaffDashboardContent() {
       LEFT JOIN vehicles v ON v.driver_id = u.id AND v.is_active = TRUE
       ORDER BY u.is_online DESC, u.role ASC, u.name ASC
     `,
+    // Latest active or pending trip for the map view
+    sql`
+      SELECT t.*, d.name as driver_name, d.phone as driver_phone
+      FROM trips t
+      LEFT JOIN users d ON t.driver_id = d.id
+      WHERE t.requester_id = ${staffId} AND t.status IN ('Active', 'Pending', 'En Route')
+      ORDER BY t.created_at DESC
+      LIMIT 1
+    `,
   ]);
+
+  const currentTrip = currentTripResult[0] || null;
 
   const chatPersonnel = (personnelResult as any[])
     .filter((p) => p.id !== staffId)
@@ -105,101 +102,142 @@ async function StaffDashboardContent() {
       plate_number: d.plate_number,
     }));
 
-  const tab1Content = (
-    <div className="space-y-6">
-      {/* Staff Profile Overview Card */}
-      <div className="bg-white rounded-2xl p-5 shadow-sm border border-slate-200">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-3">
-          <div>
-            <span className="text-[10px] uppercase font-bold text-slate-400 tracking-wider block">Staff Portal</span>
-            <h2 className="text-lg font-bold text-slate-900">{staff.name}</h2>
-            <p className="text-xs text-slate-500">{staff.email}</p>
-          </div>
-          <span className="self-start sm:self-auto text-[10px] font-bold px-3 py-1 rounded-full bg-emerald-100 text-[#0a7337] uppercase">
-            Official Staff Member
-          </span>
-        </div>
-
-        <div className="grid grid-cols-2 gap-3 pt-3 text-xs">
-          <div>
-            <span className="text-[10px] text-slate-400 block uppercase font-bold">Contact Phone</span>
-            <span className="font-bold text-slate-800">{staff.phone || 'Not set'}</span>
-          </div>
-          <div className="text-right">
-            <span className="text-[10px] text-slate-400 block uppercase font-bold">Total Trips Booked</span>
-            <span className="font-bold text-[#0a7337]">{tripsResult.length}</span>
-          </div>
-        </div>
-      </div>
-
-      {/* Staff Operations: Trip Booking, Comments, Driver Reports & Vehicle Expenses */}
-      <StaffDashboardClient
-        staffId={staffId}
-        staffName={staff.name}
-        trips={tripsResult as any[]}
-        comments={commentsResult as any[]}
-        vehicles={vehiclesResult as any[]}
-        drivers={driversList}
-      />
-    </div>
-  );
-
   return (
-    <div className="min-h-[calc(100vh-60px)] bg-slate-50 flex flex-col md:bg-gray-100">
-      <OnlineTracker userId={staffId} />
-      <CallManager userId={staffId} />
+    <div className="w-full flex justify-center p-4 sm:p-6 pb-20">
+      {/* 
+        APPLE-STYLE WRAPPER: 
+        max-w-3xl keeps the UI tight and focused. 
+        mx-auto centers it nicely.
+      */}
+      <div className="max-w-3xl w-full space-y-6">
+        
+        {/* PAGE 1: REQUEST / BOOK A TRIP */}
+        {activeView === 'request' && (
+          <div className="space-y-6">
+            <div className="mb-2 text-center sm:text-left">
+              <h3 className="text-2xl font-bold text-gray-900 tracking-tight">Request a Trip</h3>
+              <p className="text-sm text-gray-500 mt-1">Submit a new journey request to the dispatch manager.</p>
+            </div>
 
-      <Nav userId={staffId} userName={staff.name} userRole="staff" />
+            <StaffDashboardClient
+              staffId={staffId}
+              staffName={staff.name}
+              trips={tripsResult as any[]}
+              comments={commentsResult as any[]}
+              vehicles={vehiclesResult as any[]}
+              drivers={driversList}
+            />
+          </div>
+        )}
 
-      <Container className="flex-1 flex flex-col p-0 md:p-6 md:pt-0 min-h-0">
-        <DashboardLayout
-          initialTab="tab1"
-          tab1Label="Staff Portal"
-          tab1Content={tab1Content}
-          tab2Label="Fleet Drivers"
-          tab2Content={
-            <div className="bg-white rounded-2xl p-6 shadow-sm border border-slate-200 space-y-4">
-              <h3 className="text-sm font-bold text-slate-900 uppercase">Fleet Driver Directory</h3>
-              <p className="text-xs text-slate-500">Contact details and assigned vehicles for fleet drivers.</p>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                {driversList.map((driver) => (
-                  <div key={driver.id} className="p-3.5 rounded-xl border border-slate-200 bg-slate-50 text-xs space-y-1">
-                    <span className="font-bold text-slate-900 block">{driver.name}</span>
-                    <span className="text-slate-500 block">📞 {driver.phone || 'No phone set'}</span>
-                    <span className="font-mono text-[10px] font-bold px-2 py-0.5 rounded bg-white border border-slate-300 inline-block">
+        {/* PAGE 2: MY TRIPS & TRACKING (Map Only) */}
+        {activeView === 'trips' && (
+          <div className="space-y-6">
+            <div className="mb-2 text-center sm:text-left">
+              <h3 className="text-2xl font-bold text-gray-900 tracking-tight">Your Trips & Tracking</h3>
+              <p className="text-sm text-gray-500 mt-1">Track your active journeys in real-time.</p>
+            </div>
+
+            {/* LIVE TRACKING WIDGET */}
+            {currentTrip && (currentTrip.is_started || currentTrip.status === 'En Route') ? (
+              <div className="bg-white rounded-2xl p-5 sm:p-6 shadow-[0_2px_10px_rgba(0,0,0,0.02)] border border-gray-100 space-y-4">
+                <div className="flex justify-between items-center">
+                  <h3 className="text-[11px] font-bold text-gray-400 uppercase tracking-widest">Live Tracking</h3>
+                  <span className="text-xs font-semibold px-3 py-1 rounded-full border bg-blue-50 text-blue-700 border-blue-200">
+                    {currentTrip.status}
+                  </span>
+                </div>
+                <div className="rounded-2xl overflow-hidden border border-gray-100 shadow-sm relative">
+                  <MapSwitcher
+                    tripId={currentTrip.id}
+                    currentLocation={currentTrip.current_location}
+                    driverName={currentTrip.driver_name || 'Driver'}
+                    startedAt={currentTrip.started_at}
+                    isManagerView={true} // Setting to true forces read-only tracking mode
+                  />
+                </div>
+                <div className="flex justify-between text-sm items-center bg-gray-50 p-3.5 rounded-xl border border-gray-100">
+                  <div className="min-w-0 pr-4">
+                    <span className="block text-gray-400 text-[10px] uppercase font-semibold tracking-wider mb-0.5">Destination</span>
+                    <span className="font-semibold text-gray-900 truncate block">{currentTrip.destination.split(' (')[0]}</span>
+                  </div>
+                  <div className="text-right shrink-0">
+                    <span className="block text-gray-400 text-[10px] uppercase font-semibold tracking-wider mb-0.5">Driver</span>
+                    <span className="font-semibold text-gray-900">{currentTrip.driver_name || 'Assigned Driver'}</span>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="bg-white rounded-2xl p-12 shadow-[0_2px_10px_rgba(0,0,0,0.02)] border border-gray-100 text-center">
+                <p className="text-gray-500 font-medium">You have no active journeys currently in progress.</p>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* PAGE 3: VEHICLE FLEET & EXPENSES (Fleet Directory) */}
+        {activeView === 'fleet' && (
+          <div className="bg-white rounded-[24px] p-6 sm:p-8 shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-gray-100">
+            <div className="mb-6 text-center sm:text-left">
+              <h3 className="text-2xl font-bold text-gray-900 tracking-tight">Fleet Drivers Directory</h3>
+              <p className="text-sm text-gray-500 mt-1">Contact details and assigned vehicles for fleet drivers.</p>
+            </div>
+            
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {driversList.map((driver) => (
+                <div 
+                  key={driver.id} 
+                  className="p-5 rounded-2xl border border-gray-100 bg-gray-50 flex flex-col gap-2 transition-colors hover:border-gray-200 hover:shadow-sm"
+                >
+                  <span className="font-semibold text-gray-900 text-base block truncate">{driver.name}</span>
+                  <div className="flex items-center gap-2 text-sm text-gray-500">
+                    <span>📞 {driver.phone || 'No phone set'}</span>
+                  </div>
+                  <div className="mt-2">
+                    <span className="font-mono text-[10px] font-bold px-2.5 py-1.5 rounded-lg bg-white border border-gray-200 text-gray-600 inline-block shadow-sm">
                       {driver.plate_number || 'NO CAR ASSIGNED'}
                     </span>
                   </div>
-                ))}
-              </div>
+                </div>
+              ))}
             </div>
-          }
-          tab3Label="Fleet Chat"
-          tab3Badge={<UnreadBadge userId={staffId} />}
-          tab3Content={
+          </div>
+        )}
+
+        {/* PAGE 4: DISPATCH CHAT */}
+        {activeView === 'chat' && (
+          <div className="h-[calc(100vh-140px)] bg-white rounded-[24px] shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-gray-100 overflow-hidden flex flex-col">
             <ChatSystem
               senderId={staffId}
               receiverId={0}
               recipientName="Fleet Broadcast"
               personnelList={chatPersonnel}
             />
-          }
-        />
-      </Container>
+          </div>
+        )}
+
+      </div>
     </div>
   );
 }
 
-export default function StaffDashboardPage() {
+export default async function StaffDashboardPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ view?: string; page?: string }>;
+}) {
+  const resolvedParams = await searchParams;
+  const activeView = resolvedParams.view || 'request';
+
   return (
     <Suspense
       fallback={
-        <div className="min-h-screen flex items-center justify-center">
+        <div className="min-h-[60vh] flex items-center justify-center">
           <Loader text="Loading staff console..." />
         </div>
       }
     >
-      <StaffDashboardContent />
+      <StaffDashboardContent activeView={activeView} />
     </Suspense>
   );
 }
