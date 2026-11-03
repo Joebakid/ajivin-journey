@@ -142,7 +142,7 @@ async function DriverDashboardContent({
     userResult,
     tripResult,
     managerResult,
-    allManagers,
+    allPersonnel,
     vehiclesResult,
     driverHistoryResult,
     driverExpensesResult,
@@ -159,8 +159,10 @@ async function DriverDashboardContent({
       ORDER BY t.created_at DESC
       LIMIT 1
     `,
+    // Default conversation: the first manager
     sql`SELECT id, name, role, phone FROM users WHERE role = 'manager' ORDER BY id ASC LIMIT 1`,
-    sql`SELECT id, name, role, phone FROM users WHERE role = 'manager' ORDER BY name ASC`,
+    // Everyone the driver can chat with (all users except themselves)
+    sql`SELECT id, name, role, phone FROM users WHERE id <> ${driverId} ORDER BY name ASC`,
     sql`
       SELECT id, driver_id, plate_number, model, is_active, created_at
       FROM vehicles
@@ -347,7 +349,7 @@ async function DriverDashboardContent({
                         <p className="text-xs text-gray-500 text-center font-medium">
                           Tap End Trip when you arrive. Your manager and passenger will be notified.
                         </p>
-                        {/* FIX: no transform wrapper around EndTripButton, so the modal's
+                        {/* No transform wrapper around EndTripButton, so the modal's
                             position: fixed is relative to the viewport again */}
                         <form action={handleEndTrip}>
                           <input type="hidden" name="trip_id" value={currentTrip.id} />
@@ -598,7 +600,7 @@ async function DriverDashboardContent({
               receiverId={manager.id}
               recipientName={`${manager.name} (${manager.role})`}
               personnelList={
-                allManagers as { id: number; name: string; role: string; phone?: string | null }[]
+                allPersonnel as { id: number; name: string; role: string; phone?: string | null }[]
               }
             />
           </div>

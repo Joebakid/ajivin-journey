@@ -12,6 +12,17 @@ function parseId(id: number | string | undefined | null): number | null {
   return isNaN(parsed) || !parsed ? null : parsed;
 }
 
+function formatDuration(totalSeconds: number | null | undefined): string | null {
+  if (totalSeconds === null || totalSeconds === undefined || isNaN(Number(totalSeconds))) return null;
+  const s = Math.max(0, Math.floor(Number(totalSeconds)));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m ${sec}s`;
+  return `${sec}s`;
+}
+
 export async function ensureTripsTable() {
   await sql`
     CREATE TABLE IF NOT EXISTS trips (
@@ -22,10 +33,12 @@ export async function ensureTripsTable() {
       status VARCHAR(50) NOT NULL DEFAULT 'Pending',
       fasttrack_code VARCHAR(100),
       current_location TEXT,
+      location_updated_at TIMESTAMPTZ,
       scheduled_time TEXT,
       is_started BOOLEAN DEFAULT FALSE,
       started_at TIMESTAMPTZ,
       ended_at TIMESTAMPTZ,
+      duration_seconds INTEGER,
       created_at TIMESTAMPTZ DEFAULT NOW()
     )
   `;
@@ -50,6 +63,12 @@ export async function ensureTripsTable() {
   } catch (_) {}
   try {
     await sql`ALTER TABLE trips ADD COLUMN IF NOT EXISTS current_location TEXT`;
+  } catch (_) {}
+  try {
+    await sql`ALTER TABLE trips ADD COLUMN IF NOT EXISTS location_updated_at TIMESTAMPTZ`;
+  } catch (_) {}
+  try {
+    await sql`ALTER TABLE trips ADD COLUMN IF NOT EXISTS duration_seconds INTEGER`;
   } catch (_) {}
 }
 
@@ -96,14 +115,23 @@ export async function updateLocationAction(tripId: number | string, location: st
   const id = parseId(tripId);
   if (!id) return { error: 'Invalid trip ID' };
 
-  try {
-    const locStr = typeof location === 'object' ? JSON.stringify(location) : String(location);
+  const locStr = typeof location === 'object' ? JSON.stringify(location) : String(location);
 
-    await sql`
-      UPDATE trips
-      SET current_location = ${locStr}
-      WHERE id = ${id}
-    `;
+  try {
+    try {
+      await sql`
+        UPDATE trips
+        SET current_location = ${locStr}, location_updated_at = NOW()
+        WHERE id = ${id}
+      `;
+    } catch {
+      // location_updated_at column not added yet
+      await sql`
+        UPDATE trips
+        SET current_location = ${locStr}
+        WHERE id = ${id}
+      `;
+    }
 
     return { success: true };
   } catch (error) {
@@ -305,11 +333,18 @@ export async function startTripAction(tripId: number | string) {
   if (!id) return { error: 'Invalid trip ID' };
 
   try {
+    await ensureTripsTable();
     await ensureNotificationsTable();
 
+    // started_at comes from the database clock. The old position is cleared so the map
+    // never shows a leftover location from before the trip began.
     const updated = await sql`
       UPDATE trips
-      SET status = 'En Route', is_started = true, started_at = COALESCE(started_at, NOW())
+      SET status = 'En Route',
+          is_started = true,
+          started_at = COALESCE(started_at, NOW()),
+          current_location = NULL,
+          location_updated_at = NULL
       WHERE id = ${id} AND status = 'Active'
       RETURNING driver_id, requester_id, destination
     `;
@@ -362,13 +397,20 @@ export async function endTripAction(formDataOrTripId: FormData | number | string
   if (!tripId) return { error: 'Invalid trip ID' };
 
   try {
+    await ensureTripsTable();
     await ensureNotificationsTable();
 
+    // ended_at and the exact duration both come from the same NOW() in the database
     const updated = await sql`
       UPDATE trips
-      SET status = 'Completed', ended_at = NOW()
+      SET status = 'Completed',
+          ended_at = NOW(),
+          duration_seconds = CASE
+            WHEN started_at IS NULL THEN NULL
+            ELSE FLOOR(EXTRACT(EPOCH FROM (NOW() - started_at)))::int
+          END
       WHERE id = ${tripId} AND status IN ('Active', 'En Route')
-      RETURNING id, destination, driver_id, requester_id
+      RETURNING id, destination, driver_id, requester_id, duration_seconds
     `;
 
     if (updated.length > 0) {
@@ -376,12 +418,14 @@ export async function endTripAction(formDataOrTripId: FormData | number | string
       const driverRows = await sql`SELECT name FROM users WHERE id = ${trip.driver_id} LIMIT 1`;
       const driverName = driverRows[0]?.name || 'Driver';
       const place = trip.destination ? String(trip.destination).split(' (')[0] : 'destination';
+      const duration = formatDuration(trip.duration_seconds);
+      const durationText = duration ? ` Journey time: ${duration}.` : '';
 
       await sql`
         INSERT INTO notifications (title, message, target_role)
         VALUES (
           'Trip Completed',
-          ${`${driverName} has ended the trip to ${place} (TRP-${tripId}).`},
+          ${`${driverName} has ended the trip to ${place} (TRP-${tripId}).${durationText}`},
           'manager'
         )
       `;
@@ -391,7 +435,7 @@ export async function endTripAction(formDataOrTripId: FormData | number | string
           INSERT INTO notifications (title, message, target_user_id, target_role)
           VALUES (
             'Trip Completed',
-            ${`Your trip to ${place} has been marked completed by the driver. You can now leave a review on your dashboard.`},
+            ${`Your trip to ${place} has been marked completed by the driver.${durationText} You can now leave a review on your dashboard.`},
             ${trip.requester_id},
             'staff'
           )

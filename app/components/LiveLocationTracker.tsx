@@ -12,6 +12,8 @@ interface TripLive {
   status: string | null;
   started_at: string | null;
   current_location: string | null;
+  elapsed_seconds?: number | null; // measured by the database clock
+  location_age_seconds?: number | null; // age of the stored position, database clock
 }
 
 async function fetchTripLive(tripId: number | string): Promise<TripLive | null> {
@@ -100,6 +102,11 @@ const LANDMARK_RADIUS_M = 1500;
 const GEOCODE_MIN_MOVE_M = 25;
 const LANDMARK_MIN_MOVE_M = 120;
 const STALE_AFTER_SECONDS = 30;
+
+// GPS quality filters
+const MAX_ACCEPTABLE_ACCURACY_M = 100; // ignore fixes worse than this once we have a decent one
+const FIRST_FIX_GRACE_MS = 15000; // after this long, accept a poorer first fix
+const MAX_PLAUSIBLE_SPEED_MS = 70; // ~250 km/h, anything faster is treated as a GPS jump
 
 const REGION_COORDS: Record<string, LatLng> = {
   effurun: [5.5544, 5.7932],
@@ -417,6 +424,10 @@ export default function LiveLocationTracker({
   const landmarkAbortRef = useRef<AbortController | null>(null);
   const lastSentRef = useRef(0);
 
+  // GPS filtering and server-based timer
+  const lastGoodFixRef = useRef<{ pos: LatLng; t: number; acc: number } | null>(null);
+  const elapsedAnchorRef = useRef<{ seconds: number; perf: number } | null>(null);
+
   // State
   const [coords, setCoords] = useState<LatLng>(initial.coords);
   const [hasFix, setHasFix] = useState(initial.hasFix);
@@ -452,12 +463,20 @@ export default function LiveLocationTracker({
     coordsRef.current = coords;
   }, [coords]);
 
-  const elapsedSeconds = useMemo(() => {
+  // Elapsed trip time. The server measures it with the database clock; between polls we
+  // advance it with performance.now(), which is not affected by the device clock.
+  // `now` ticks every second, so this recalculates once a second.
+  const elapsedSeconds = (() => {
+    void now;
+    const a = elapsedAnchorRef.current;
+    if (a) return Math.max(0, Math.floor(a.seconds + (performance.now() - a.perf) / 1000));
+
+    // Fallback until the server answers
     if (!tripStartTime) return null;
     const start = new Date(tripStartTime).getTime();
     if (isNaN(start)) return null;
-    return Math.max(0, Math.floor((now - start) / 1000));
-  }, [tripStartTime, now]);
+    return Math.max(0, Math.floor((Date.now() - start) / 1000));
+  })();
 
   const formatElapsed = (s: number) => {
     const h = Math.floor(s / 3600);
@@ -777,38 +796,113 @@ export default function LiveLocationTracker({
   useEffect(() => {
     if (isManagerView || typeof navigator === 'undefined' || !navigator.geolocation) return;
 
+    const watchStarted = Date.now();
+
     const watchId = navigator.geolocation.watchPosition(
       (pos) => {
-        const next: LatLng = [pos.coords.latitude, pos.coords.longitude];
+        const acc = pos.coords.accuracy;
+        const fixTime = pos.timestamp;
+        const raw: LatLng = [pos.coords.latitude, pos.coords.longitude];
+        const prev = lastGoodFixRef.current;
+
+        // Ignore stale or out-of-order fixes
+        if (prev && fixTime <= prev.t) return;
+
+        // Ignore poor fixes once we have a good one. Before that, wait a short grace period
+        // for a better first fix, then accept the best we can get so the map is never blank.
+        if (acc > MAX_ACCEPTABLE_ACCURACY_M) {
+          const inGrace = Date.now() - watchStarted < FIRST_FIX_GRACE_MS;
+          if (!prev && inGrace) return;
+          if (prev && (prev.acc <= MAX_ACCEPTABLE_ACCURACY_M || acc > prev.acc * 1.5)) return;
+        }
+
+        let position = raw;
+        let derivedSpeed: number | null = null;
+        let derivedHeading: number | null = null;
+
+        if (prev) {
+          const dt = (fixTime - prev.t) / 1000;
+          const moved = distanceM(prev.pos, raw);
+          derivedSpeed = dt > 0 ? moved / dt : null;
+
+          // Ignore impossible jumps, but only when the previous fix was a good one.
+          // After 30 seconds a far-away fix is accepted (tunnels, signal loss).
+          if (
+            derivedSpeed !== null &&
+            derivedSpeed > MAX_PLAUSIBLE_SPEED_MS &&
+            dt < 30 &&
+            prev.acc <= MAX_ACCEPTABLE_ACCURACY_M
+          ) {
+            return;
+          }
+
+          // Hold the position while standing still, so drift does not look like movement
+          const reportedSpeed = pos.coords.speed ?? derivedSpeed ?? 0;
+          if (reportedSpeed < 0.8 && moved < Math.max(acc, 5) * 0.5) {
+            position = prev.pos;
+          } else if (moved > 5) {
+            derivedHeading = bearingDeg(prev.pos, raw);
+          }
+        }
+
+        lastGoodFixRef.current = { pos: position, t: fixTime, acc };
+
         const m: Motion = {
-          speed: pos.coords.speed,
-          heading: pos.coords.heading,
-          accuracy: pos.coords.accuracy,
+          speed: pos.coords.speed ?? derivedSpeed,
+          heading: Number.isFinite(pos.coords.heading) ? pos.coords.heading : derivedHeading,
+          accuracy: acc,
         };
-        applyFix(next, m, Date.now());
+        applyFix(position, m, fixTime);
 
         const t = Date.now();
         if (t - lastSentRef.current >= 2000) {
           lastSentRef.current = t;
-          const payload = JSON.stringify({
-            lat: next[0],
-            lng: next[1],
-            speed: m.speed,
-            heading: m.heading,
-            accuracy: m.accuracy,
-            updatedAt: new Date(t).toISOString(),
-          });
-          pushLocation(tripId, payload);
+          pushLocation(
+            tripId,
+            JSON.stringify({
+              lat: position[0],
+              lng: position[1],
+              speed: m.speed,
+              heading: m.heading,
+              accuracy: m.accuracy,
+              updatedAt: new Date(fixTime).toISOString(),
+            })
+          );
         }
       },
       (err) => console.warn('Geolocation error:', err.message),
-      { enableHighAccuracy: true, maximumAge: 2000, timeout: 10000 }
+      { enableHighAccuracy: true, maximumAge: 0, timeout: 15000 }
     );
 
     return () => navigator.geolocation.clearWatch(watchId);
   }, [tripId, isManagerView, applyFix]);
 
-  /* ------ Poll the trip: is it still live, when it started, where it is ------ */
+  /* ---------------- Driver: keep the screen on so GPS keeps flowing -------- */
+
+  useEffect(() => {
+    if (isManagerView || typeof navigator === 'undefined' || !('wakeLock' in navigator)) return;
+
+    let lock: any = null;
+    const acquire = async () => {
+      try {
+        lock = await (navigator as any).wakeLock.request('screen');
+      } catch {
+        /* not allowed right now */
+      }
+    };
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') acquire();
+    };
+
+    acquire();
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible);
+      lock?.release?.().catch?.(() => {});
+    };
+  }, [isManagerView]);
+
+  /* ------ Poll the trip: is it still live, how long, where is it ------ */
 
   useEffect(() => {
     let cancelled = false;
@@ -816,7 +910,9 @@ export default function LiveLocationTracker({
     const poll = async (force = false) => {
       if (document.hidden && !force) return;
 
+      const sentAt = performance.now();
       const trip = await fetchTripLive(tripId);
+      const receivedAt = performance.now();
       if (cancelled) return;
 
       if (!trip) {
@@ -826,13 +922,31 @@ export default function LiveLocationTracker({
 
       if (trip.started_at) setTripStartTime((prev) => prev ?? trip.started_at);
 
+      // Server elapsed time. The reading was taken about halfway through the round trip.
+      if (typeof trip.elapsed_seconds === 'number') {
+        const sampledAt = (sentAt + receivedAt) / 2;
+        const a = elapsedAnchorRef.current;
+        const predicted = a ? a.seconds + (sampledAt - a.perf) / 1000 : null;
+        if (predicted === null || Math.abs(predicted - trip.elapsed_seconds) > 1.5) {
+          elapsedAnchorRef.current = { seconds: trip.elapsed_seconds, perf: sampledAt };
+        }
+      }
+
       if (!isManagerView) return;
 
       setTripLive(trip.live);
       if (!trip.live || !trip.current_location) return;
 
       const parsed = parseRawLocation(trip.current_location);
-      if (parsed.hasFix) applyFix(parsed.coords, parsed.motion, parsed.updatedAt);
+      if (parsed.hasFix) {
+        // Use the server's age of the position when available, so "last update" does not
+        // depend on the driver's phone clock being right.
+        const updatedAt =
+          typeof trip.location_age_seconds === 'number'
+            ? Date.now() - trip.location_age_seconds * 1000
+            : parsed.updatedAt;
+        applyFix(parsed.coords, parsed.motion, updatedAt);
+      }
     };
 
     poll(true);
