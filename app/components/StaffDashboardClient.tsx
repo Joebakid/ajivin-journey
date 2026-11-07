@@ -221,7 +221,6 @@ export default function StaffDashboardClient({
 
                   <div className="space-y-1">
                     <label className="text-[10px] font-bold text-slate-600 uppercase">Schedule Time</label>
-                    {/* Changed to native datetime-local picker menu */}
                     <input
                       name="preferred_time"
                       type="datetime-local"
@@ -421,14 +420,36 @@ export default function StaffDashboardClient({
               </div>
             </div>
 
-            <div className="space-y-1">
-              <label className="text-[10px] font-bold text-slate-600 uppercase">Vehicle Plate (If known)</label>
-              <input
-                name="plate_number"
-                type="text"
-                placeholder="e.g. KJA-991XA"
-                className="w-full px-3.5 py-2 text-xs rounded-xl border border-slate-300 focus:ring-2 focus:ring-[#0a7337] outline-none font-mono uppercase bg-white"
-              />
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold text-slate-600 uppercase">Vehicle Plate (If known)</label>
+                <input
+                  name="plate_number"
+                  type="text"
+                  placeholder="e.g. KJA-991XA"
+                  className="w-full px-3.5 py-2.5 text-xs rounded-xl border border-slate-300 focus:ring-2 focus:ring-[#0a7337] outline-none font-mono uppercase bg-white"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold text-slate-600 uppercase">Related Trip (Optional)</label>
+                <select
+                  name="trip_id"
+                  className="w-full px-3 py-2.5 text-xs rounded-xl border border-slate-300 focus:ring-2 focus:ring-[#0a7337] outline-none bg-white"
+                >
+                  <option value="">-- General Report / Not specific to a trip --</option>
+                  {trips.map((t) => {
+                    const d = new Date(t.created_at);
+                    const dateStr = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+                    const timeStr = d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+                    return (
+                      <option key={t.id} value={t.id}>
+                        {dateStr} {timeStr} - {t.destination.split(' (')[0]}
+                      </option>
+                    );
+                  })}
+                </select>
+              </div>
             </div>
 
             <div className="space-y-1">

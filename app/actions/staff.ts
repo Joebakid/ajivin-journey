@@ -1,3 +1,4 @@
+// app/actions/staff.ts
 'use server';
 
 import { sql } from '@/src/lib/db';
@@ -37,6 +38,13 @@ export async function ensureStaffTables() {
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
   `;
+
+  // Safely add trip_id to existing reports table if it doesn't exist
+  try {
+    await sql`ALTER TABLE driver_reports ADD COLUMN trip_id INTEGER REFERENCES trips(id) ON DELETE SET NULL;`;
+  } catch (e) {
+    // Column already exists, safe to ignore
+  }
 }
 
 export async function bookStaffTripAction(formData: FormData) {
@@ -115,6 +123,8 @@ export async function reportDriverAction(formData: FormData) {
   const staffId = parseInt(formData.get('staff_id') as string, 10);
   const driverIdRaw = formData.get('driver_id') as string;
   const driverId = driverIdRaw ? parseInt(driverIdRaw, 10) : null;
+  const tripIdRaw = formData.get('trip_id') as string;
+  const tripId = tripIdRaw ? parseInt(tripIdRaw, 10) : null;
   const driverNameInput = (formData.get('driver_name') as string)?.trim();
   const plateNumber = (formData.get('plate_number') as string)?.trim().toUpperCase() || 'N/A';
   const incidentType = (formData.get('incident_type') as string)?.trim();
@@ -137,8 +147,8 @@ export async function reportDriverAction(formData: FormData) {
     }
 
     await sql`
-      INSERT INTO driver_reports (staff_id, staff_name, driver_id, driver_name, plate_number, incident_type, description)
-      VALUES (${staffId}, ${staffName}, ${driverId}, ${finalDriverName}, ${plateNumber}, ${incidentType}, ${description})
+      INSERT INTO driver_reports (staff_id, staff_name, driver_id, driver_name, plate_number, trip_id, incident_type, description)
+      VALUES (${staffId}, ${staffName}, ${driverId}, ${finalDriverName}, ${plateNumber}, ${tripId}, ${incidentType}, ${description})
     `;
 
     await sql`
