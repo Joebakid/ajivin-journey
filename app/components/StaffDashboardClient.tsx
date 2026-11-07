@@ -1,3 +1,4 @@
+// app/components/StaffDashboardClient.tsx
 'use client';
 
 import { useState } from 'react';
@@ -220,16 +221,13 @@ export default function StaffDashboardClient({
 
                   <div className="space-y-1">
                     <label className="text-[10px] font-bold text-slate-600 uppercase">Schedule Time</label>
-                    <select
+                    {/* Changed to native datetime-local picker menu */}
+                    <input
                       name="preferred_time"
-                      defaultValue="Immediate"
+                      type="datetime-local"
+                      required
                       className="w-full px-3 py-2.5 text-xs rounded-xl border border-slate-300 focus:ring-2 focus:ring-[#0a7337] outline-none bg-white"
-                    >
-                      <option value="Immediate">Immediate / ASAP</option>
-                      <option value="Morning">Morning (8 AM - 12 PM)</option>
-                      <option value="Afternoon">Afternoon (12 PM - 4 PM)</option>
-                      <option value="Evening">Evening (After 4 PM)</option>
-                    </select>
+                    />
                   </div>
                 </div>
               </div>
@@ -323,48 +321,48 @@ export default function StaffDashboardClient({
                             <div className="flex items-center gap-1 text-xs">
                               <span className="text-[10px] text-slate-400">Rating:</span>
                               <select name="rating" defaultValue="5" className="border rounded px-1 py-0.5 text-xs bg-white">
-                                <option value="5">⭐⭐⭐⭐⭐ (5)</option>
-                                <option value="4">⭐⭐⭐⭐ (4)</option>
-                                <option value="3">⭐⭐⭐ (3)</option>
-                                <option value="2">⭐⭐ (2)</option>
-                                <option value="1">⭐ (1)</option>
+                                <option value="5">⭐⭐⭐⭐⭐</option>
+                                <option value="4">⭐⭐⭐⭐</option>
+                                <option value="3">⭐⭐⭐</option>
+                                <option value="2">⭐⭐</option>
+                                <option value="1">⭐</option>
                               </select>
                             </div>
                           </div>
-
                           <textarea
                             name="comment"
-                            rows={2}
                             required
-                            placeholder="Share notes on driver timeliness, vehicle comfort, or journey feedback..."
-                            className="w-full p-2 text-xs border rounded-lg outline-none focus:ring-1 focus:ring-[#0a7337]"
+                            rows={2}
+                            placeholder="How was the journey?"
+                            className="w-full px-2 py-1.5 text-xs border rounded-md outline-none focus:border-[#0a7337] resize-none"
                           ></textarea>
-
                           <div className="flex justify-end gap-2">
                             <button
                               type="button"
                               onClick={() => setCommentingTripId(null)}
-                              className="px-3 py-1 text-xs font-bold rounded-lg border text-slate-600 hover:bg-slate-50"
+                              className="px-3 py-1.5 text-slate-500 hover:text-slate-700 font-semibold"
                             >
                               Cancel
                             </button>
                             <button
                               type="submit"
                               disabled={isSubmitting}
-                              className="px-3 py-1 text-xs font-bold rounded-lg bg-[#0a7337] text-white hover:bg-[#085a2b]"
+                              className="px-4 py-1.5 bg-[#0a7337] text-white rounded-md font-semibold hover:bg-[#085a2b] disabled:opacity-50"
                             >
                               {isSubmitting ? 'Posting...' : 'Post Comment'}
                             </button>
                           </div>
                         </form>
                       ) : (
-                        <button
-                          type="button"
-                          onClick={() => setCommentingTripId(trip.id)}
-                          className="text-xs font-bold text-[#0a7337] hover:underline flex items-center gap-1"
-                        >
-                          💬 Write a comment / review
-                        </button>
+                        <div className="pt-1">
+                          <button
+                            type="button"
+                            onClick={() => setCommentingTripId(trip.id)}
+                            className="text-[11px] font-bold text-[#0a7337] hover:underline"
+                          >
+                            + Add Comment / Rate Trip
+                          </button>
+                        </div>
                       )}
                     </div>
                   );
@@ -379,8 +377,8 @@ export default function StaffDashboardClient({
       {activeSubTab === 'report' && (
         <div className="bg-white rounded-2xl p-6 shadow-sm border border-slate-200 space-y-4">
           <div className="border-b border-slate-100 pb-3">
-            <h3 className="text-sm font-bold text-red-700 uppercase tracking-wider flex items-center gap-1.5">
-              <span>⚠️</span>
+            <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wider flex items-center gap-2">
+              <span className="text-red-500">⚠️</span>
               <span>Report Driver Incident or Misconduct</span>
             </h3>
             <p className="text-xs text-slate-500">

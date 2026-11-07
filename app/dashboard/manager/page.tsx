@@ -16,6 +16,29 @@ import { ensureVehiclesTable } from '@/app/actions/vehicle';
 import { ensureStaffTables } from '@/app/actions/staff';
 import { ensureTripsTable } from '@/app/actions/trip';
 
+// Helper function to format the raw datetime-local string into a readable AM/PM format
+function formatScheduleTime(timeStr: any) {
+  if (!timeStr || typeof timeStr !== 'string') return 'Immediate';
+  if (!timeStr.includes('T')) return timeStr; // Returns as-is if already formatted or 'Immediate'
+  
+  try {
+    const [datePart, timePart] = timeStr.split('T');
+    const [year, month, day] = datePart.split('-');
+    const [hourStr, minute] = timePart.split(':');
+    
+    let hour = parseInt(hourStr, 10);
+    const ampm = hour >= 12 ? 'PM' : 'AM';
+    hour = hour % 12 || 12; // Convert '0' to '12'
+    
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const monthName = months[parseInt(month, 10) - 1];
+    
+    return `${monthName} ${parseInt(day, 10)}, ${year} at ${hour}:${minute} ${ampm}`;
+  } catch (e) {
+    return timeStr;
+  }
+}
+
 async function loadActiveTrips(): Promise<any[]> {
   const rows = await sql`
     SELECT t.*, u.id as driver_id, u.name as driver_name, u.phone
@@ -247,6 +270,12 @@ async function ManagerDashboardContent({
     sql`UPDATE notifications SET is_read = TRUE WHERE target_role = 'manager' AND is_read = FALSE`.catch(console.error);
   }
 
+  // Format the scheduled time for all pending trips to make it human-readable
+  const formattedPendingTrips = (pendingTrips as any[]).map((trip) => ({
+    ...trip,
+    scheduled_time: formatScheduleTime(trip.scheduled_time),
+  }));
+
   const chatPersonnel = (initialPersonnel as any[])
     .filter((p) => p.id !== managerId)
     .map((p) => ({ id: p.id, name: p.name, role: p.role, phone: p.phone }));
@@ -296,7 +325,7 @@ async function ManagerDashboardContent({
               <h3 className="text-2xl font-bold text-gray-900 tracking-tight">Pending Clearances</h3>
               <p className="text-sm text-gray-500 mt-1">Review and approve journey requests from staff.</p>
             </div>
-            <PendingApprovals initialTrips={pendingTrips as any} drivers={driversList as any} />
+            <PendingApprovals initialTrips={formattedPendingTrips as any} drivers={driversList as any} />
           </div>
         )}
 
