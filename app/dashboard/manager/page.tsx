@@ -16,12 +16,12 @@ import CreatePersonnelModal from '@/app/components/CreatePersonnelModal';
 import VehicleFleetManager from '@/app/components/VehicleFleetManager';
 import SosAlertCard from '@/app/components/SosAlertCard';
 import BackButton from '@/app/components/BackButton';
-import { ensureVehiclesTable } from '@/app/actions/vehicle';
-import { ensureStaffTables } from '@/app/actions/staff';
-import { ensureTripsTable } from '@/app/actions/trip';
-import { ensurePanicTable } from '@/app/actions/panic';
+import CallButton from '@/app/components/CallButton';
+import { ensureAllTables } from '@/app/actions/ensure';
 
-// Helper function to format the raw datetime-local string into a readable AM/PM format
+type SearchParams = { userId?: string; tripId?: string; view?: string };
+
+// Format the raw datetime-local string into a readable AM/PM format
 function formatScheduleTime(timeStr: any) {
   if (!timeStr || typeof timeStr !== 'string') return 'Immediate';
   if (!timeStr.includes('T')) return timeStr;
@@ -52,7 +52,6 @@ async function loadActiveTrips(): Promise<any[]> {
     WHERE t.status IN ('Active', 'En Route')
     ORDER BY t.created_at DESC
   `;
-
   return rows.map((r) => ({
     ...r,
     started_at: r.started_at || r.created_at,
@@ -89,11 +88,12 @@ async function dispatchDriverAction(formData: FormData) {
   redirect('/dashboard/manager?view=active');
 }
 
-async function ManagerDashboardContent({
-  searchParams,
-}: {
-  searchParams: Promise<{ userId?: string; tripId?: string; view?: string }>;
-}) {
+// Views that should keep polling the server. Forms and heavy tabs are excluded
+// so they never compete with a background refresh.
+const ALWAYS_REFRESH_VIEWS = ['approvals', 'active', 'sos', 'notifications'];
+const NEVER_REFRESH_VIEWS = ['dispatch', 'chat', 'fleet'];
+
+async function ManagerDashboardContent({ params }: { params: SearchParams }) {
   const cookieStore = await cookies();
   const rawUserId = cookieStore.get('userId')?.value || cookieStore.get('ajivin_session_id')?.value;
   const authUserId = rawUserId ? parseInt(rawUserId, 10) : null;
@@ -102,211 +102,225 @@ async function ManagerDashboardContent({
     redirect('/login');
   }
 
-  await ensureTripsTable();
-  await ensureVehiclesTable();
-  await ensureStaffTables();
-  await ensurePanicTable();
+  const selectedUserId = params.userId ? parseInt(params.userId, 10) : null;
+  const selectedTripId = params.tripId ? parseInt(params.tripId, 10) : null;
 
-  const resolvedParams = await searchParams;
-  const selectedUserId = resolvedParams.userId ? parseInt(resolvedParams.userId, 10) : null;
-  const selectedTripId = resolvedParams.tripId ? parseInt(resolvedParams.tripId, 10) : null;
-
-  // Smart View Routing: Default to approvals, but override if a specific deep link is present
-  let activeView = resolvedParams.view || 'approvals';
-  if (!resolvedParams.view) {
+  // Smart View Routing: default to approvals, but honour deep links
+  let activeView = params.view || 'approvals';
+  if (!params.view) {
     if (selectedUserId) activeView = 'personnel';
     else if (selectedTripId) activeView = 'active';
   }
 
+  // --- PER-VIEW DATA REQUIREMENTS ---
+  const isSos = activeView === 'sos';
+  const isApprovals = activeView === 'approvals';
+  const isDispatch = activeView === 'dispatch';
+  const isActive = activeView === 'active';
+  const isFleet = activeView === 'fleet';
+  const isChat = activeView === 'chat';
+  const isNotifications = activeView === 'notifications';
+  const isPersonnel = activeView === 'personnel';
+  const isPersonnelList = isPersonnel && !selectedUserId;
+  const isPersonnelDetail = isPersonnel && !!selectedUserId;
+
+  const needsDrivers = isApprovals || isDispatch || isFleet;
+
+  // Run table setup once per instance, in parallel with nothing else blocking it.
+  // (Best long term: move this to a migration script and delete this line.)
+  await ensureAllTables();
+
+  const managerPromise = sql`
+    SELECT id, name, email, role, phone FROM users
+    WHERE id = ${authUserId} AND role = 'manager' LIMIT 1
+  `;
+
+  // SOS: full log only on the SOS page. Everywhere else only a tiny query for the banner.
+  const sosPromise = isSos
+    ? sql`
+        SELECT a.*, u.name AS driver_name, u.phone AS driver_phone,
+               t.current_location AS live_location, t.status AS trip_status, t.is_started AS trip_is_started
+        FROM panic_alerts a
+        LEFT JOIN users u ON u.id = a.driver_id
+        LEFT JOIN trips t ON t.id = a.trip_id
+        ORDER BY a.is_resolved ASC, a.created_at DESC
+        LIMIT 100
+      `
+    : sql`
+        SELECT a.id, a.driver_id, a.plate_number, a.destination, a.is_resolved,
+               u.name AS driver_name,
+               COUNT(*) OVER() AS total_active
+        FROM panic_alerts a
+        LEFT JOIN users u ON u.id = a.driver_id
+        WHERE a.is_resolved = FALSE
+        ORDER BY a.created_at DESC
+        LIMIT 1
+      `;
+
+  // Drivers only (with busy flag) for approvals / dispatch / fleet
+  const driversPromise = needsDrivers
+    ? sql`
+        SELECT u.id, u.name, u.phone, v.plate_number,
+               (at.id IS NOT NULL) AS is_busy,
+               at.id AS active_trip_id
+        FROM users u
+        LEFT JOIN vehicles v ON v.driver_id = u.id AND v.is_active = TRUE
+        LEFT JOIN (
+          SELECT DISTINCT ON (driver_id) driver_id, id
+          FROM trips
+          WHERE status IN ('Active', 'En Route')
+          ORDER BY driver_id, created_at DESC
+        ) at ON at.driver_id = u.id
+        WHERE u.role = 'driver'
+        ORDER BY u.name ASC
+      `
+    : Promise.resolve([]);
+
+  // Full personnel list only on the personnel directory
+  const personnelPromise = isPersonnelList
+    ? sql`
+        SELECT u.id, u.name, u.email, u.role, u.phone, u.license_number, u.is_online, u.last_seen,
+               v.plate_number, v.model AS vehicle_model,
+               (at.id IS NOT NULL) AS is_busy,
+               at.id AS active_trip_id
+        FROM users u
+        LEFT JOIN vehicles v ON v.driver_id = u.id AND v.is_active = TRUE
+        LEFT JOIN (
+          SELECT DISTINCT ON (driver_id) driver_id, id
+          FROM trips
+          WHERE status IN ('Active', 'En Route')
+          ORDER BY driver_id, created_at DESC
+        ) at ON at.driver_id = u.id
+        ORDER BY u.is_online DESC, u.role ASC, u.name ASC
+      `
+    : Promise.resolve([]);
+
+  // Chat only needs a slim user list
+  const chatUsersPromise = isChat
+    ? sql`SELECT id, name, role, phone FROM users WHERE id <> ${authUserId} ORDER BY name ASC`
+    : Promise.resolve([]);
+
+  const pendingTripsPromise = isApprovals
+    ? sql`
+        SELECT t.id, t.destination, t.created_at, t.driver_id, t.requester_id, t.scheduled_time,
+               u.name AS driver_name, u.phone AS driver_phone,
+               req.name AS requester_name, req.phone AS requester_phone
+        FROM trips t
+        LEFT JOIN users u ON t.driver_id = u.id
+        LEFT JOIN users req ON t.requester_id = req.id
+        WHERE t.status = 'Pending'
+        ORDER BY t.created_at DESC
+      `
+    : Promise.resolve([]);
+
+  // Dispatch form does not render active trips, so only the active view loads them
+  const activeTripRowsPromise = isActive ? loadActiveTrips() : Promise.resolve([]);
+
+  // Personnel detail data
+  const selectedUserRowsPromise = isPersonnelDetail
+    ? sql`
+        SELECT u.id, u.name, u.email, u.role, u.phone, u.license_number, u.is_online,
+               v.plate_number, v.model AS vehicle_model
+        FROM users u
+        LEFT JOIN vehicles v ON v.driver_id = u.id AND v.is_active = TRUE
+        WHERE u.id = ${selectedUserId} LIMIT 1
+      `
+    : Promise.resolve([]);
+
+  const userTripsPromise = isPersonnelDetail
+    ? sql`SELECT * FROM trips WHERE driver_id = ${selectedUserId} ORDER BY created_at DESC LIMIT 100`
+    : Promise.resolve([]);
+
+  const userExpensesPromise = isPersonnelDetail
+    ? sql`
+        SELECT e.id, e.expense_type, e.amount, e.description, e.vehicle_plate, e.created_at
+        FROM expenses e WHERE e.driver_id = ${selectedUserId}
+        UNION ALL
+        SELECT ve.id + 2000000 AS id, ve.expense_type, ve.amount, ve.description,
+               v.plate_number AS vehicle_plate, ve.created_at
+        FROM vehicle_expenses ve
+        LEFT JOIN vehicles v ON ve.vehicle_id = v.id
+        WHERE v.driver_id = ${selectedUserId}
+           OR ve.logged_by_name ILIKE (SELECT '%' || name || '%' FROM users WHERE id = ${selectedUserId} LIMIT 1)
+        ORDER BY created_at DESC LIMIT 100
+      `
+    : Promise.resolve([]);
+
+  // Comments now limited to this driver's trips (was: latest 100 comments globally)
+  const tripCommentsPromise = isPersonnelDetail
+    ? sql`
+        SELECT c.id, c.trip_id, c.user_name, c.comment, c.rating, c.created_at, t.destination
+        FROM trip_comments c
+        JOIN trips t ON c.trip_id = t.id
+        WHERE t.driver_id = ${selectedUserId}
+        ORDER BY c.created_at DESC LIMIT 100
+      `
+    : Promise.resolve([]);
+
+  const vehiclesPromise = isFleet
+    ? sql`
+        SELECT v.id, v.driver_id, v.plate_number, v.model, v.is_active, v.created_at,
+               u.name AS driver_name, u.phone AS driver_phone
+        FROM vehicles v LEFT JOIN users u ON v.driver_id = u.id
+        ORDER BY v.is_active DESC, v.created_at DESC
+      `
+    : Promise.resolve([]);
+
+  const vehicleExpensesPromise = isFleet
+    ? sql`
+        SELECT ve.id, ve.vehicle_id, ve.expense_type, ve.amount, ve.description, ve.logged_by_name, ve.created_at
+        FROM vehicle_expenses ve
+        UNION ALL
+        SELECT e.id + 1000000 AS id, v.id AS vehicle_id, e.expense_type, e.amount, e.description,
+               u.name AS logged_by_name, e.created_at
+        FROM expenses e
+        JOIN users u ON e.driver_id = u.id
+        JOIN vehicles v ON (
+          (e.vehicle_plate IS NOT NULL AND e.vehicle_plate != ''
+            AND UPPER(REPLACE(REPLACE(v.plate_number, ' ', ''), '-', '')) = UPPER(REPLACE(REPLACE(e.vehicle_plate, ' ', ''), '-', '')))
+          OR ((e.vehicle_plate IS NULL OR e.vehicle_plate = '') AND v.driver_id = e.driver_id AND v.is_active = TRUE)
+        )
+        ORDER BY created_at DESC LIMIT 150
+      `
+    : Promise.resolve([]);
+
+  const notificationsPromise = isNotifications
+    ? sql`
+        SELECT id, title, message, created_at, is_read FROM notifications
+        WHERE target_role = 'manager' ORDER BY created_at DESC LIMIT 30
+      `
+    : Promise.resolve([]);
+
   const [
     managerResult,
+    sosResult,
+    drivers,
+    personnel,
+    chatUsers,
     pendingTrips,
     activeTripRows,
-    initialPersonnel,
     selectedUserRows,
     userTrips,
     userExpenses,
+    tripCommentsResult,
     vehiclesResult,
     vehicleExpensesResult,
-    tripCommentsResult,
     notificationsResult,
-    sosLogsResult,
   ] = await Promise.all([
-    // 1. Verify manager authorization
-    sql`SELECT id, name, email, role, phone FROM users WHERE id = ${authUserId} AND role = 'manager' LIMIT 1`,
-
-    // 2. Pending trip clearance
-    sql`
-      SELECT
-        t.id,
-        t.destination,
-        t.created_at,
-        t.driver_id,
-        t.requester_id,
-        t.scheduled_time,
-        u.name as driver_name,
-        u.phone as driver_phone,
-        req.name as requester_name,
-        req.phone as requester_phone
-      FROM trips t
-      LEFT JOIN users u ON t.driver_id = u.id
-      LEFT JOIN users req ON t.requester_id = req.id
-      WHERE t.status = 'Pending'
-      ORDER BY t.created_at DESC
-    `,
-
-    // 3. Active fleet trips
-    loadActiveTrips(),
-
-    // 4. Live personnel with active plate numbers AND current trip busy status
-    sql`
-      SELECT
-        u.id, u.name, u.email, u.role, u.phone, u.license_number, u.is_online, u.last_seen,
-        v.plate_number, v.model as vehicle_model,
-        EXISTS (
-          SELECT 1 FROM trips t
-          WHERE t.driver_id = u.id AND t.status IN ('Active', 'En Route')
-        ) as is_busy,
-        (
-          SELECT t.id FROM trips t
-          WHERE t.driver_id = u.id AND t.status IN ('Active', 'En Route')
-          ORDER BY t.created_at DESC LIMIT 1
-        ) as active_trip_id
-      FROM users u
-      LEFT JOIN vehicles v ON v.driver_id = u.id AND v.is_active = TRUE
-      ORDER BY u.is_online DESC, u.role ASC, u.name ASC
-    `,
-
-    // 5. Selected user profile
-    selectedUserId
-      ? sql`
-          SELECT
-            u.id, u.name, u.email, u.role, u.phone, u.license_number, u.is_online,
-            v.plate_number, v.model as vehicle_model
-          FROM users u
-          LEFT JOIN vehicles v ON v.driver_id = u.id AND v.is_active = TRUE
-          WHERE u.id = ${selectedUserId}
-          LIMIT 1
-        `
-      : Promise.resolve([] as any[]),
-
-    // 6. Selected driver trips
-    selectedUserId
-      ? sql`SELECT * FROM trips WHERE driver_id = ${selectedUserId} ORDER BY created_at DESC`
-      : Promise.resolve([] as any[]),
-
-    // 7. Selected driver OR STAFF combined expenses
-    selectedUserId
-      ? sql`
-          SELECT
-            e.id,
-            e.expense_type,
-            e.amount,
-            e.description,
-            e.vehicle_plate,
-            e.created_at
-          FROM expenses e
-          WHERE e.driver_id = ${selectedUserId}
-          UNION ALL
-          SELECT
-            ve.id + 2000000 as id,
-            ve.expense_type,
-            ve.amount,
-            ve.description,
-            v.plate_number as vehicle_plate,
-            ve.created_at
-          FROM vehicle_expenses ve
-          LEFT JOIN vehicles v ON ve.vehicle_id = v.id
-          WHERE v.driver_id = ${selectedUserId}
-             OR ve.logged_by_name ILIKE (SELECT '%' || name || '%' FROM users WHERE id = ${selectedUserId} LIMIT 1)
-          ORDER BY created_at DESC
-        `
-      : Promise.resolve([] as any[]),
-
-    // 8. Fleet vehicles with assigned driver info
-    sql`
-      SELECT
-        v.id,
-        v.driver_id,
-        v.plate_number,
-        v.model,
-        v.is_active,
-        v.created_at,
-        u.name as driver_name,
-        u.phone as driver_phone
-      FROM vehicles v
-      LEFT JOIN users u ON v.driver_id = u.id
-      ORDER BY v.is_active DESC, v.created_at DESC
-    `,
-
-    // 9. All unified vehicle expenses
-    sql`
-      SELECT
-        ve.id,
-        ve.vehicle_id,
-        ve.expense_type,
-        ve.amount,
-        ve.description,
-        ve.logged_by_name,
-        ve.created_at
-      FROM vehicle_expenses ve
-      UNION ALL
-      SELECT
-        e.id + 1000000 as id,
-        v.id as vehicle_id,
-        e.expense_type,
-        e.amount,
-        e.description,
-        u.name as logged_by_name,
-        e.created_at
-      FROM expenses e
-      JOIN users u ON e.driver_id = u.id
-      JOIN vehicles v ON (
-        (e.vehicle_plate IS NOT NULL AND e.vehicle_plate != '' AND UPPER(REPLACE(REPLACE(v.plate_number, ' ', ''), '-', '')) = UPPER(REPLACE(REPLACE(e.vehicle_plate, ' ', ''), '-', '')))
-        OR ((e.vehicle_plate IS NULL OR e.vehicle_plate = '') AND v.driver_id = e.driver_id AND v.is_active = TRUE)
-      )
-      ORDER BY created_at DESC
-    `,
-
-    // 10. All Staff Trip Comments & Ratings
-    sql`
-      SELECT
-        c.id,
-        c.trip_id,
-        c.user_name,
-        c.comment,
-        c.rating,
-        c.created_at,
-        t.destination
-      FROM trip_comments c
-      LEFT JOIN trips t ON c.trip_id = t.id
-      ORDER BY c.created_at DESC
-    `,
-
-    // 11. General Notifications for Manager
-    sql`
-      SELECT id, title, message, created_at, is_read
-      FROM notifications
-      WHERE target_role = 'manager'
-      ORDER BY created_at DESC
-      LIMIT 30
-    `,
-
-    // 12. SOS alerts with driver, trip, vehicle and live location details
-    sql`
-      SELECT
-        a.*,
-        u.name AS driver_name,
-        u.phone AS driver_phone,
-        t.current_location AS live_location,
-        t.status AS trip_status,
-        t.is_started AS trip_is_started
-      FROM panic_alerts a
-      LEFT JOIN users u ON u.id = a.driver_id
-      LEFT JOIN trips t ON t.id = a.trip_id
-      ORDER BY a.is_resolved ASC, a.created_at DESC
-      LIMIT 100
-    `,
+    managerPromise,
+    sosPromise,
+    driversPromise,
+    personnelPromise,
+    chatUsersPromise,
+    pendingTripsPromise,
+    activeTripRowsPromise,
+    selectedUserRowsPromise,
+    userTripsPromise,
+    userExpensesPromise,
+    tripCommentsPromise,
+    vehiclesPromise,
+    vehicleExpensesPromise,
+    notificationsPromise,
   ]);
 
   if (managerResult.length === 0) {
@@ -318,12 +332,21 @@ async function ManagerDashboardContent({
   const selectedUser = (selectedUserRows as any[])[0] || null;
   const notifications = notificationsResult as any[];
 
-  // SOS alerts and the ones still unresolved
-  const sosLogs = sosLogsResult as any[];
-  const activeEmergencies = sosLogs.filter((sos) => !sos.is_resolved);
+  if (isPersonnelDetail && !selectedUser) {
+    redirect('/dashboard/manager?view=personnel');
+  }
 
-  // Mark standard notifications as read in the background if the manager is currently viewing them
-  if (activeView === 'notifications' && notifications.some((n) => !n.is_read && !n.title.includes('PANIC'))) {
+  // SOS data: full log on the SOS page, slim row for the banner elsewhere
+  const sosRows = sosResult as any[];
+  const sosLogs = isSos ? sosRows : [];
+  const activeEmergencies = isSos ? sosRows.filter((s) => !s.is_resolved) : sosRows;
+  const activeEmergencyCount = isSos
+    ? activeEmergencies.length
+    : Number(sosRows[0]?.total_active ?? 0);
+  const firstEmergency = activeEmergencies[0];
+
+  // Mark standard notifications as read in the background
+  if (isNotifications && notifications.some((n) => !n.is_read && !n.title.includes('PANIC'))) {
     sql`UPDATE notifications SET is_read = TRUE WHERE target_role = 'manager' AND is_read = FALSE AND title NOT ILIKE '%PANIC%'`.catch(console.error);
   }
 
@@ -332,20 +355,21 @@ async function ManagerDashboardContent({
     scheduled_time: formatScheduleTime(trip.scheduled_time),
   }));
 
-  const chatPersonnel = (initialPersonnel as any[])
-    .filter((p) => p.id !== managerId)
-    .map((p) => ({ id: p.id, name: p.name, role: p.role, phone: p.phone }));
+  const chatPersonnel = (chatUsers as any[]).map((p) => ({
+    id: p.id,
+    name: p.name,
+    role: p.role,
+    phone: p.phone,
+  }));
 
-  const driversList = (initialPersonnel as any[])
-    .filter((p) => p.role === 'driver')
-    .map((d) => ({
-      id: d.id,
-      name: d.name,
-      phone: d.phone,
-      plate_number: d.plate_number,
-      is_busy: Boolean(d.is_busy),
-      active_trip_id: d.active_trip_id || null,
-    }));
+  const driversList = (drivers as any[]).map((d) => ({
+    id: d.id,
+    name: d.name,
+    phone: d.phone,
+    plate_number: d.plate_number,
+    is_busy: Boolean(d.is_busy),
+    active_trip_id: d.active_trip_id || null,
+  }));
 
   const activeTrips = (activeTripRows as any[]).map((t) => ({
     id: t.id as number,
@@ -366,12 +390,15 @@ async function ManagerDashboardContent({
       ? activeTrips.find((t) => t.driver_id === selectedUserId)?.id ?? null
       : null;
 
-  const firstEmergency = activeEmergencies[0];
+  // Decide whether this view should auto-refresh
+  const shouldAutoRefresh =
+    ALWAYS_REFRESH_VIEWS.includes(activeView) ||
+    (activeEmergencyCount > 0 && !NEVER_REFRESH_VIEWS.includes(activeView));
+  const refreshMs = activeEmergencyCount > 0 ? 5000 : 20000;
 
   return (
     <div className="w-full flex justify-center p-4 sm:p-6 pb-20 relative">
-      {/* Essential Manager Utilities: refresh faster while an SOS is active */}
-      <AutoRefresh intervalMs={activeEmergencies.length > 0 ? 5000 : 15000} />
+      {shouldAutoRefresh && <AutoRefresh intervalMs={refreshMs} />}
 
       {/* APPLE-STYLE WRAPPER */}
       <div className="max-w-3xl w-full space-y-6">
@@ -381,7 +408,7 @@ async function ManagerDashboardContent({
           <div className="bg-red-600 text-white rounded-[24px] p-5 sm:p-6 shadow-[0_8px_30px_rgba(220,38,38,0.4)] animate-pulse border-4 border-red-700 flex flex-col sm:flex-row justify-between sm:items-center gap-4 relative overflow-hidden">
             <div className="relative z-10 min-w-0">
               <h2 className="text-xl font-black uppercase tracking-widest flex items-center gap-2">
-                🚨 Emergency SOS ({activeEmergencies.length} active)
+                🚨 Emergency SOS ({activeEmergencyCount} active)
               </h2>
               <p className="text-sm font-semibold mt-1.5 text-red-100 max-w-lg leading-relaxed">
                 {firstEmergency.driver_name || `Driver #${firstEmergency.driver_id}`}
@@ -409,7 +436,7 @@ async function ManagerDashboardContent({
         )}
 
         {/* DEDICATED SOS VIEW */}
-        {activeView === 'sos' && (
+        {isSos && (
           <div className="space-y-6">
             <div className="mb-2 text-center sm:text-left">
               <h3 className="text-2xl font-bold text-red-700 tracking-tight">🚨 Emergency SOS</h3>
@@ -433,7 +460,7 @@ async function ManagerDashboardContent({
         )}
 
         {/* PAGE 1: PENDING CLEARANCES (Approvals) */}
-        {activeView === 'approvals' && (
+        {isApprovals && (
           <div className="space-y-6">
             <div className="mb-2 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
               <div className="text-center sm:text-left">
@@ -442,17 +469,18 @@ async function ManagerDashboardContent({
               </div>
               <Link
                 href="/dashboard/manager?view=dispatch"
+                prefetch
                 className="shrink-0 bg-[#0a7337] hover:bg-[#085a2b] text-white text-sm font-bold px-5 py-2.5 rounded-xl transition-all shadow-sm active:scale-95 text-center"
               >
                 + Dispatch Driver
               </Link>
             </div>
-            <PendingApprovals initialTrips={formattedPendingTrips as any} drivers={driversList as any}/>
+            <PendingApprovals initialTrips={formattedPendingTrips as any} drivers={driversList as any} />
           </div>
         )}
 
         {/* PAGE 1.5: DIRECT DISPATCH */}
-        {activeView === 'dispatch' && (
+        {isDispatch && (
           <div className="space-y-6">
             <div className="flex items-center gap-2 mb-2">
               <div className="bg-white px-4 py-2 rounded-xl border border-gray-100 shadow-sm active:scale-95">
@@ -535,17 +563,16 @@ async function ManagerDashboardContent({
         )}
 
         {/* PAGE 2: ACTIVE JOURNEYS & LIVE MAP */}
-        {activeView === 'active' && (
+        {isActive && (
           <div className="space-y-6">
             <div className="mb-2 text-center sm:text-left">
               <h3 className="text-2xl font-bold text-gray-900 tracking-tight">Active Journeys & Live Map</h3>
               <p className="text-sm text-gray-500 mt-1">Track ongoing fleet trips in real-time.</p>
             </div>
-            
-            {/* Find the selected trip so we can check its status */}
+
             {(() => {
-              const selectedTripObj = activeTrips.find(t => t.id === initialTripId);
-              
+              const selectedTripObj = activeTrips.find((t) => t.id === initialTripId);
+
               if (selectedTripObj && !selectedTripObj.is_started) {
                 return (
                   <div className="bg-white rounded-[24px] shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-gray-100 p-8 text-center space-y-4">
@@ -565,14 +592,14 @@ async function ManagerDashboardContent({
                   </div>
                 );
               }
-              
+
               return <ActiveJourneys trips={activeTrips as any} initialTripId={initialTripId} />;
             })()}
           </div>
         )}
 
         {/* PAGE 3: VEHICLE FLEET & EXPENSES */}
-        {activeView === 'fleet' && (
+        {isFleet && (
           <div className="space-y-6">
             <div className="mb-2 text-center sm:text-left">
               <h3 className="text-2xl font-bold text-gray-900 tracking-tight">Vehicle Fleet & Expenses</h3>
@@ -587,7 +614,7 @@ async function ManagerDashboardContent({
         )}
 
         {/* PAGE 4: PERSONNEL & ACTIVITY */}
-        {activeView === 'personnel' && (
+        {isPersonnel && (
           <div className="space-y-6">
             {!selectedUserId ? (
               <>
@@ -598,14 +625,15 @@ async function ManagerDashboardContent({
                   </div>
                   <CreatePersonnelModal />
                 </div>
-                <LivePersonnelTracker initialPersonnel={initialPersonnel as any} />
+                <LivePersonnelTracker initialPersonnel={personnel as any} />
               </>
             ) : (
               <div className="space-y-4">
-                <div className="flex items-center gap-2">
+                <div className="flex items-center justify-between gap-2">
                   <div className="bg-white px-4 py-2 rounded-xl border border-gray-100 shadow-sm active:scale-95">
                     <BackButton />
                   </div>
+                  <CallButton phone={selectedUser.phone} name={selectedUser.name} label={`Call ${selectedUser.name?.split(' ')[0] ?? ''}`.trim()} />
                 </div>
                 <PersonnelActivityViewer
                   key={selectedUser.id}
@@ -620,7 +648,7 @@ async function ManagerDashboardContent({
         )}
 
         {/* PAGE 5: NOTIFICATIONS FEED */}
-        {activeView === 'notifications' && (
+        {isNotifications && (
           <div className="space-y-6">
             <div className="mb-2 text-center sm:text-left">
               <h3 className="text-2xl font-bold text-gray-900 tracking-tight">Notifications Feed</h3>
@@ -662,7 +690,7 @@ async function ManagerDashboardContent({
         )}
 
         {/* PAGE 6: DISPATCH CHAT */}
-        {activeView === 'chat' && (
+        {isChat && (
           <div className="h-[calc(100vh-140px)] bg-white rounded-[24px] shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-gray-100 overflow-hidden flex flex-col">
             <ChatSystem
               senderId={managerId}
@@ -680,17 +708,24 @@ async function ManagerDashboardContent({
 export default async function ManagerDashboardPage({
   searchParams,
 }: {
-  searchParams: Promise<{ userId?: string; tripId?: string; view?: string }>;
+  searchParams: Promise<SearchParams>;
 }) {
+  const params = await searchParams;
+
+  // The key makes Suspense re-show the loader on every tab change,
+  // so clicks give instant feedback instead of freezing on the old screen.
+  const suspenseKey = `${params.view ?? ''}|${params.userId ?? ''}|${params.tripId ?? ''}`;
+
   return (
     <Suspense
+      key={suspenseKey}
       fallback={
         <div className="min-h-[60vh] flex items-center justify-center">
           <Loader text="Loading dispatch board..." />
         </div>
       }
     >
-      <ManagerDashboardContent searchParams={searchParams} />
+      <ManagerDashboardContent params={params} />
     </Suspense>
   );
 }

@@ -13,8 +13,10 @@ import EndTripButton from '@/app/components/EndTripButton';
 import Vehicle from '@/app/components/Vehicle';
 import PanicButton from '@/app/components/PanicButton';
 import AutoRefresh from '@/app/components/AutoRefresh';
-import { ensureVehiclesTable } from '@/app/actions/vehicle';
+import { ensureAllTables } from '@/app/actions/ensure';
 import { cancelTripAction, startTripAction, endTripAction } from '@/app/actions/trip';
+
+const ITEMS_PER_PAGE = 8;
 
 function statusClasses(status: string) {
   if (status === 'Completed') return 'bg-green-50 text-[#0a7337] border-green-200';
@@ -75,19 +77,21 @@ async function submitJourneyRequest(formData: FormData) {
   const purpose = formData.get('purpose') as string;
 
   try {
-    await sql`
-      INSERT INTO trips (driver_id, destination, status, created_at)
-      VALUES (${driverId}, ${destination + ' (' + vehicle + ') - ' + purpose}, 'Pending', NOW())
-    `;
-
-    await sql`
-      INSERT INTO notifications (title, message, target_role)
-      VALUES (
-        'New Journey Request',
-        ${'Driver requested a journey to ' + destination + ' with ' + vehicle},
-        'manager'
-      )
-    `;
+    // The two inserts are independent, so run them together
+    await Promise.all([
+      sql`
+        INSERT INTO trips (driver_id, destination, status, created_at)
+        VALUES (${driverId}, ${destination + ' (' + vehicle + ') - ' + purpose}, 'Pending', NOW())
+      `,
+      sql`
+        INSERT INTO notifications (title, message, target_role)
+        VALUES (
+          'New Journey Request',
+          ${'Driver requested a journey to ' + destination + ' with ' + vehicle},
+          'manager'
+        )
+      `,
+    ]);
 
     revalidatePath('/dashboard/driver');
     revalidatePath('/dashboard/manager');
@@ -136,7 +140,84 @@ async function DriverDashboardContent({
     redirect('/login');
   }
 
-  await ensureVehiclesTable();
+  // Runs once per server instance (memoized), not on every request
+  await ensureAllTables();
+
+  const offset = (currentPage - 1) * ITEMS_PER_PAGE;
+
+  // --- PER-VIEW DATA REQUIREMENTS ---
+  const needsTripData = activeView === 'journey' || activeView === 'panic';
+  const needsVehicles = ['vehicle', 'journey', 'log-expense'].includes(activeView);
+  const isChat = activeView === 'chat';
+  const isHistory = activeView === 'history';
+  const isExpenses = activeView === 'expenses';
+
+  // Always needed for auth
+  const userPromise = sql`
+    SELECT id, name, phone, license_number, role FROM users WHERE id = ${driverId}
+  `;
+
+  const tripPromise = needsTripData
+    ? sql`
+        SELECT t.*, req.name AS requester_name, req.phone AS requester_phone
+        FROM trips t
+        LEFT JOIN users req ON t.requester_id = req.id
+        WHERE t.driver_id = ${driverId} AND t.status IN ('Active', 'Pending', 'En Route')
+        ORDER BY t.created_at DESC LIMIT 1
+      `
+    : Promise.resolve([]);
+
+  // Manager is only needed for the chat view (was fetched on every page)
+  const managerPromise = isChat
+    ? sql`SELECT id, name, role, phone FROM users WHERE role = 'manager' ORDER BY id ASC LIMIT 1`
+    : Promise.resolve([]);
+
+  const vehiclesPromise = needsVehicles
+    ? sql`
+        SELECT id, driver_id, plate_number, model, is_active, created_at FROM vehicles
+        WHERE driver_id = ${driverId} ORDER BY is_active DESC, created_at DESC
+      `
+    : Promise.resolve([]);
+
+  const allPersonnelPromise = isChat
+    ? sql`SELECT id, name, role, phone FROM users WHERE id <> ${driverId} ORDER BY name ASC`
+    : Promise.resolve([]);
+
+  // History: paginate in SQL, only the current page is transferred
+  const driverHistoryPromise = isHistory
+    ? sql`
+        SELECT id, destination, status, fasttrack_code, created_at,
+               COUNT(*) OVER() AS total_count
+        FROM trips
+        WHERE driver_id = ${driverId}
+        ORDER BY created_at DESC
+        LIMIT ${ITEMS_PER_PAGE} OFFSET ${offset}
+      `
+    : Promise.resolve([]);
+
+  // Expenses: paginate in SQL, with true totals computed by the database
+  const driverExpensesPromise = isExpenses
+    ? sql`
+        SELECT x.*,
+               COUNT(*) OVER() AS total_count,
+               COALESCE(SUM(x.amount::numeric) OVER(), 0) AS total_spent
+        FROM (
+          SELECT e.id, e.expense_type AS category, e.amount, e.description,
+                 e.vehicle_plate AS plate, u.name AS logged_by, e.created_at
+          FROM expenses e
+          LEFT JOIN users u ON e.driver_id = u.id
+          WHERE e.driver_id = ${driverId}
+          UNION ALL
+          SELECT ve.id + 1000000 AS id, ve.expense_type AS category, ve.amount, ve.description,
+                 v.plate_number AS plate, ve.logged_by_name AS logged_by, ve.created_at
+          FROM vehicle_expenses ve
+          JOIN vehicles v ON ve.vehicle_id = v.id
+          WHERE v.driver_id = ${driverId}
+        ) x
+        ORDER BY x.created_at DESC
+        LIMIT ${ITEMS_PER_PAGE} OFFSET ${offset}
+      `
+    : Promise.resolve([]);
 
   const [
     userResult,
@@ -147,47 +228,13 @@ async function DriverDashboardContent({
     driverHistoryResult,
     driverExpensesResult,
   ] = await Promise.all([
-    sql`SELECT id, name, phone, license_number, role FROM users WHERE id = ${driverId}`,
-    sql`
-      SELECT
-        t.*,
-        req.name as requester_name,
-        req.phone as requester_phone
-      FROM trips t
-      LEFT JOIN users req ON t.requester_id = req.id
-      WHERE t.driver_id = ${driverId} AND t.status IN ('Active', 'Pending', 'En Route')
-      ORDER BY t.created_at DESC
-      LIMIT 1
-    `,
-    sql`SELECT id, name, role, phone FROM users WHERE role = 'manager' ORDER BY id ASC LIMIT 1`,
-    sql`SELECT id, name, role, phone FROM users WHERE id <> ${driverId} ORDER BY name ASC`,
-    sql`
-      SELECT id, driver_id, plate_number, model, is_active, created_at
-      FROM vehicles
-      WHERE driver_id = ${driverId}
-      ORDER BY is_active DESC, created_at DESC
-    `,
-    sql`
-      SELECT id, destination, status, fasttrack_code, created_at
-      FROM trips
-      WHERE driver_id = ${driverId}
-      ORDER BY created_at DESC
-      LIMIT 100
-    `,
-    sql`
-      SELECT
-        e.id, e.expense_type as category, e.amount, e.description, e.vehicle_plate as plate, u.name as logged_by, e.created_at
-      FROM expenses e
-      LEFT JOIN users u ON e.driver_id = u.id
-      WHERE e.driver_id = ${driverId}
-      UNION ALL
-      SELECT
-        ve.id + 1000000 as id, ve.expense_type as category, ve.amount, ve.description, v.plate_number as plate, ve.logged_by_name as logged_by, ve.created_at
-      FROM vehicle_expenses ve
-      JOIN vehicles v ON ve.vehicle_id = v.id
-      WHERE v.driver_id = ${driverId}
-      ORDER BY created_at DESC
-    `,
+    userPromise,
+    tripPromise,
+    managerPromise,
+    allPersonnelPromise,
+    vehiclesPromise,
+    driverHistoryPromise,
+    driverExpensesPromise,
   ]);
 
   if (userResult.length === 0) {
@@ -211,30 +258,21 @@ async function DriverDashboardContent({
   };
   const vehicles = vehiclesResult as any[];
   const activeVehicle = vehicles.find((v) => v.is_active) || vehicles[0] || null;
-  const driverTrips = driverHistoryResult as any[];
-  const driverExpenses = driverExpensesResult as any[];
 
-  const totalSpent = driverExpenses.reduce(
-    (sum, exp) => sum + parseFloat(String(exp.amount || 0)),
-    0
-  );
+  // Already one page of rows each; totals come from the window functions
+  const paginatedTrips = driverHistoryResult as any[];
+  const paginatedExpenses = driverExpensesResult as any[];
+
+  const totalTrips = Number(paginatedTrips[0]?.total_count ?? 0);
+  const historyPages = Math.ceil(totalTrips / ITEMS_PER_PAGE);
+
+  const totalExpenseCount = Number(paginatedExpenses[0]?.total_count ?? 0);
+  const expensesPages = Math.ceil(totalExpenseCount / ITEMS_PER_PAGE);
+  const totalSpent = parseFloat(String(paginatedExpenses[0]?.total_spent ?? 0));
 
   const defaultVehicleDisplay = activeVehicle
     ? `${activeVehicle.model} (${activeVehicle.plate_number})`
     : driver.license_number || '';
-
-  const itemsPerPage = 8;
-  const historyPages = Math.ceil(driverTrips.length / itemsPerPage);
-  const paginatedTrips = driverTrips.slice(
-    (currentPage - 1) * itemsPerPage,
-    currentPage * itemsPerPage
-  );
-
-  const expensesPages = Math.ceil(driverExpenses.length / itemsPerPage);
-  const paginatedExpenses = driverExpenses.slice(
-    (currentPage - 1) * itemsPerPage,
-    currentPage * itemsPerPage
-  );
 
   // A trip that is in transit: the live tracker should be running for it
   const tripInTransit = Boolean(
@@ -243,9 +281,10 @@ async function DriverDashboardContent({
 
   return (
     <div className="w-full flex justify-center p-4 sm:p-6 pb-20 relative">
-      
-      {/* Auto-sync background updates (e.g. manager assigns a trip) */}
-      <AutoRefresh intervalMs={15000} />
+
+      {/* Auto-sync only where it matters (e.g. manager assigns or clears a trip).
+          Other tabs no longer re-run the page every 15s. */}
+      {activeView === 'journey' && <AutoRefresh intervalMs={15000} />}
 
       <div className="max-w-3xl w-full space-y-6">
 
@@ -520,7 +559,7 @@ async function DriverDashboardContent({
         )}
 
         {/* PAGE 5: EXPENSES & REPAIRS LOG */}
-        {activeView === 'expenses' && (
+        {isExpenses && (
           <div className="bg-white rounded-[24px] shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-gray-100 overflow-hidden">
             <div className="p-6 sm:p-8 bg-gray-50/50 border-b border-gray-100 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
               <div>
@@ -544,7 +583,7 @@ async function DriverDashboardContent({
             </div>
 
             <div className="p-4 sm:p-6">
-              {driverExpenses.length === 0 ? (
+              {paginatedExpenses.length === 0 ? (
                 <div className="py-12 text-center text-sm font-medium text-gray-400">
                   No expenses or repairs have been logged yet.
                 </div>
@@ -592,16 +631,16 @@ async function DriverDashboardContent({
         )}
 
         {/* PAGE 6: MY JOURNEY LOG */}
-        {activeView === 'history' && (
+        {isHistory && (
           <div className="bg-white rounded-[24px] p-6 sm:p-8 shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-gray-100">
             <div className="flex justify-between items-center mb-6">
               <h3 className="text-lg font-bold text-gray-900 tracking-tight">My Journey Log</h3>
               <span className="text-xs font-semibold bg-gray-100 text-gray-600 px-3 py-1 rounded-full">
-                {driverTrips.length} Trips
+                {totalTrips} Trips
               </span>
             </div>
 
-            {driverTrips.length === 0 ? (
+            {paginatedTrips.length === 0 ? (
               <div className="py-12 text-center text-sm font-medium text-gray-400 border border-dashed border-gray-200 rounded-2xl">
                 You haven't logged any trips yet.
               </div>
@@ -647,7 +686,7 @@ async function DriverDashboardContent({
         )}
 
         {/* PAGE 7: DISPATCH CHAT */}
-        {activeView === 'chat' && (
+        {isChat && (
           <div className="h-[calc(100vh-140px)] bg-white rounded-[24px] shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-gray-100 overflow-hidden flex flex-col">
             <ChatSystem
               senderId={driverId}
@@ -671,10 +710,14 @@ export default async function DriverDashboardPage({
 }) {
   const resolvedParams = await searchParams;
   const activeView = resolvedParams.view || 'journey';
-  const currentPage = parseInt(resolvedParams.page || '1', 10);
+  const parsedPage = parseInt(resolvedParams.page || '1', 10);
+  const currentPage = Number.isNaN(parsedPage) || parsedPage < 1 ? 1 : parsedPage;
 
+  // The key makes Suspense re-show the loader on every tab change,
+  // so taps give instant feedback instead of freezing on the old screen.
   return (
     <Suspense
+      key={`${activeView}|${currentPage}`}
       fallback={
         <div className="min-h-[60vh] flex items-center justify-center">
           <Loader text="Loading driver view..." />
