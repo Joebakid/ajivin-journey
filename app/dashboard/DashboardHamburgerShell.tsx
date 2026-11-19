@@ -1,3 +1,4 @@
+// app/dashboard/DashboardHamburgerShell.tsx
 'use client';
 
 import { useState, useEffect } from 'react';
@@ -19,10 +20,12 @@ import {
   FiBell,
   FiLogOut,
   FiChevronRight,
+  FiAlertTriangle,
 } from 'react-icons/fi';
 import { IconType } from 'react-icons';
 import Logo from '@/app/components/Logo';
 import Container from '@/app/components/Container';
+import ThemeToggle from '@/app/components/ThemeToggle';
 import { markAllNotificationsReadAction } from '@/app/actions/notification';
 
 interface ShellProps {
@@ -38,26 +41,44 @@ interface MenuItem {
   label: string;
   href: string;
   icon: IconType;
+  customClass?: string; // Allows specific styling for the SOS button
 }
+
+const SOS_STYLE =
+  'text-red-700 bg-red-50 hover:bg-red-600 hover:text-white border border-red-200 mt-4';
 
 // Dynamically maps each role to their exact views and URLs
 const ROLE_MENUS: Record<'driver' | 'manager' | 'staff', MenuItem[]> = {
   driver: [
     { key: 'journey', label: 'Current Journey & Request', href: '/dashboard/driver?view=journey', icon: FiNavigation },
-    { key: 'vehicle', label: 'Assigned Vehicle', href: '/dashboard/driver?view=vehicle', icon: FiTruck},
+    { key: 'vehicle', label: 'Assigned Vehicle', href: '/dashboard/driver?view=vehicle', icon: FiTruck },
     { key: 'log-expense', label: 'Submit New Expense', href: '/dashboard/driver?view=log-expense', icon: FiPlusCircle },
     { key: 'expenses', label: 'Vehicle Expenses & Repairs', href: '/dashboard/driver?view=expenses', icon: FiDollarSign },
     { key: 'history', label: 'My Journey Log', href: '/dashboard/driver?view=history', icon: FiClock },
     { key: 'chat', label: 'Dispatch Chat', href: '/dashboard/driver?view=chat', icon: FiMessageSquare },
     { key: 'profile', label: 'My Profile', href: '/dashboard/profile', icon: FiUser },
+    {
+      key: 'panic',
+      label: '🚨 Emergency SOS',
+      href: '/dashboard/driver?view=panic',
+      icon: FiAlertTriangle,
+      customClass: SOS_STYLE,
+    },
   ],
   manager: [
     { key: 'approvals', label: 'Pending Clearances', href: '/dashboard/manager?view=approvals', icon: FiCheckSquare },
     { key: 'active', label: 'Active Journeys & Live Map', href: '/dashboard/manager?view=active', icon: FiMapPin },
     { key: 'fleet', label: 'Vehicle Fleet & Expenses', href: '/dashboard/manager?view=fleet', icon: FiTruck },
     { key: 'personnel', label: 'Personnel & Activity', href: '/dashboard/manager?view=personnel', icon: FiUsers },
-    { key: 'chat', label: 'Dispatch Chat', href: '/dashboard/manager?view=chat', icon: FiMessageSquare},
+    { key: 'chat', label: 'Dispatch Chat', href: '/dashboard/manager?view=chat', icon: FiMessageSquare },
     { key: 'profile', label: 'My Profile', href: '/dashboard/profile', icon: FiUser },
+    {
+      key: 'sos',
+      label: '🚨 Emergency SOS',
+      href: '/dashboard/manager?view=sos',
+      icon: FiAlertTriangle,
+      customClass: SOS_STYLE,
+    },
   ],
   staff: [
     { key: 'request', label: 'Request / Book a Trip', href: '/dashboard/staff?view=request', icon: FiNavigation },
@@ -78,13 +99,13 @@ export default function DashboardHamburgerShell({
   const [isOpen, setIsOpen] = useState(false);
   const [isNotifOpen, setIsNotifOpen] = useState(false);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
-  
+
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const router = useRouter();
 
   const menuItems = ROLE_MENUS[userRole] || ROLE_MENUS.driver;
-  
+
   const currentView = pathname.includes('/profile')
     ? 'profile'
     : searchParams.get('view') || menuItems[0].key;
@@ -92,7 +113,7 @@ export default function DashboardHamburgerShell({
   const activeItem = menuItems.find((item) => item.key === currentView) || menuItems[0];
   const ActiveHeaderIcon = activeItem.icon || FiNavigation;
 
-  const unreadCount = notifications.filter(n => !n.is_read).length;
+  const unreadCount = notifications.filter((n) => !n.is_read).length;
 
   // Auto-close menus on route/view change
   useEffect(() => {
@@ -122,10 +143,10 @@ export default function DashboardHamburgerShell({
 
   return (
     <div className="min-h-[calc(100vh-55px)] bg-slate-50 flex flex-col relative">
-      
+
       {/* Invisible backdrop for Notifications Modal */}
       {isNotifOpen && (
-        <div 
+        <div
           className="fixed inset-0 z-40"
           onClick={() => setIsNotifOpen(false)}
         />
@@ -134,7 +155,7 @@ export default function DashboardHamburgerShell({
       {/* Top Navbar */}
       <header className="sticky top-0 z-40 bg-white border-b border-slate-200 shadow-xs">
         <Container className="h-16 flex items-center justify-between gap-4">
-          
+
           {/* Left: Hamburger + Brand + Active Page Title */}
           <div className="flex items-center gap-3 min-w-0">
             <button
@@ -155,9 +176,11 @@ export default function DashboardHamburgerShell({
             </div>
           </div>
 
-          {/* Right: Notifications + User Profile Pill + Visible Logout Button */}
+          {/* Right: Theme + Notifications + User Profile Pill + Logout */}
           <div className="flex items-center gap-2 sm:gap-3 shrink-0">
-            
+
+            <ThemeToggle />
+
             {/* Notification Bell with Dropdown Modal */}
             <div className="relative z-50">
               <button
@@ -181,7 +204,7 @@ export default function DashboardHamburgerShell({
                       </span>
                     )}
                   </div>
-                  
+
                   <div className="overflow-y-auto flex-1 p-2">
                     {notifications.length === 0 ? (
                       <div className="p-8 text-center text-xs font-medium text-slate-400">
@@ -189,25 +212,53 @@ export default function DashboardHamburgerShell({
                       </div>
                     ) : (
                       <div className="space-y-1">
-                        {notifications.map((notif) => (
-                          <div 
-                            key={notif.id} 
-                            className={`p-3.5 rounded-xl flex flex-col gap-1 transition-colors ${
-                              notif.is_read ? 'hover:bg-slate-50' : 'bg-green-50/50 border border-green-100'
-                            }`}
-                          >
-                            <div className="flex justify-between items-start gap-2">
-                              <span className="text-xs font-bold text-slate-900 leading-tight">{notif.title}</span>
-                              {!notif.is_read && (
-                                <span className="w-1.5 h-1.5 rounded-full bg-[#0a7337] shrink-0 mt-1"></span>
-                              )}
+                        {notifications.map((notif) => {
+                          // Panic alerts open the SOS page for managers so they can see the location
+                          const isPanic =
+                            userRole === 'manager' && /panic/i.test(String(notif.title || ''));
+
+                          const itemClass = `p-3.5 rounded-xl flex flex-col gap-1 transition-colors ${
+                            isPanic
+                              ? 'bg-red-50 border border-red-200 hover:bg-red-100'
+                              : notif.is_read
+                              ? 'hover:bg-slate-50'
+                              : 'bg-green-50/50 border border-green-100'
+                          }`;
+
+                          const content = (
+                            <>
+                              <div className="flex justify-between items-start gap-2">
+                                <span className="text-xs font-bold text-slate-900 leading-tight">
+                                  {notif.title}
+                                </span>
+                                {!notif.is_read && (
+                                  <span className="w-1.5 h-1.5 rounded-full bg-[#0a7337] shrink-0 mt-1"></span>
+                                )}
+                              </div>
+                              <span className="text-[11px] text-slate-600 leading-relaxed">
+                                {notif.message}
+                              </span>
+                              <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mt-1">
+                                {notif.time}
+                                {isPanic && ' · Tap to view location'}
+                              </span>
+                            </>
+                          );
+
+                          return isPanic ? (
+                            <Link
+                              key={notif.id}
+                              href="/dashboard/manager?view=sos"
+                              className={itemClass}
+                            >
+                              {content}
+                            </Link>
+                          ) : (
+                            <div key={notif.id} className={itemClass}>
+                              {content}
                             </div>
-                            <span className="text-[11px] text-slate-600 leading-relaxed">{notif.message}</span>
-                            <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mt-1">
-                              {notif.time}
-                            </span>
-                          </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     )}
                   </div>
@@ -288,28 +339,44 @@ export default function DashboardHamburgerShell({
           {menuItems.map((item) => {
             const isActive = item.key === currentView;
             const Icon = item.icon;
+
+            // Allow override logic to render the SOS item distinctly
+            let baseStyles = isActive
+              ? 'bg-[#0a7337] text-white shadow-sm'
+              : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900';
+
+            if (item.customClass) {
+              baseStyles = isActive
+                ? 'text-white bg-red-600 border border-red-600 mt-4'
+                : item.customClass;
+            }
+
             return (
               <Link
                 key={item.key}
                 href={item.href}
                 onClick={() => setIsOpen(false)}
-                className={`group flex items-center justify-between px-3.5 py-3 rounded-xl text-sm font-semibold transition-all ${
-                  isActive
-                    ? 'bg-[#0a7337] text-white shadow-sm'
-                    : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
-                }`}
+                className={`group flex items-center justify-between px-3.5 py-3 rounded-xl text-sm font-semibold transition-all ${baseStyles}`}
               >
                 <div className="flex items-center gap-3 min-w-0">
                   <Icon
                     className={`w-4 h-4 shrink-0 transition-colors ${
-                      isActive ? 'text-white' : 'text-slate-400 group-hover:text-[#0a7337]'
+                      isActive && !item.customClass
+                        ? 'text-white'
+                        : item.customClass
+                        ? ''
+                        : 'text-slate-400 group-hover:text-[#0a7337]'
                     }`}
                   />
                   <span className="truncate">{item.label}</span>
                 </div>
                 <FiChevronRight
                   className={`w-4 h-4 shrink-0 transition-transform group-hover:translate-x-0.5 ${
-                    isActive ? 'text-white' : 'text-slate-300 group-hover:text-slate-600'
+                    isActive && !item.customClass
+                      ? 'text-white'
+                      : item.customClass
+                      ? ''
+                      : 'text-slate-300 group-hover:text-slate-600'
                   }`}
                 />
               </Link>

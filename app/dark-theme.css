@@ -1,0 +1,79 @@
+/* app/dark-theme.css
+   Tailwind v4 builds every colour utility from a CSS variable, so redefining
+   the palette under .dark flips the whole existing UI without touching components. */
+
+.dark {
+  color-scheme: dark;
+
+  /* white becomes the card surface; text-white is pinned back to real white below */
+  --color-white: #111a2b;
+
+  /* neutrals: inverted scale */
+  --color-gray-50: #0c1322;
+  --color-gray-100: #1a2538;
+  --color-gray-200: #243247;
+  --color-gray-300: #334155;
+  --color-gray-400: #64748b;
+  --color-gray-500: #94a3b8;
+  --color-gray-600: #a9b6c9;
+  --color-gray-700: #cbd5e1;
+  --color-gray-800: #e2e8f0;
+  --color-gray-900: #f1f5f9;
+  --color-gray-950: #f8fafc;
+
+  --color-slate-50: #0c1322;
+  --color-slate-100: #1a2538;
+  --color-slate-200: #243247;
+  --color-slate-300: #334155;
+  --color-slate-400: #64748b;
+  --color-slate-500: #94a3b8;
+  --color-slate-600: #a9b6c9;
+  --color-slate-700: #cbd5e1;
+  --color-slate-800: #e2e8f0;
+  --color-slate-900: #f1f5f9;
+  --color-slate-950: #f8fafc;
+
+  /* status tints: dark backgrounds, light text */
+  --color-green-50: #0d2a1a;
+  --color-green-100: #12361f;
+  --color-green-200: #14532d;
+  --color-green-700: #86efac;
+  --color-green-900: #bbf7d0;
+
+  --color-red-50: #2a1215;
+  --color-red-100: #3b1519;
+  --color-red-200: #7f1d1d;
+  --color-red-900: #fecaca;
+
+  --color-orange-50: #2b1a0c;
+  --color-orange-200: #7c2d12;
+  --color-orange-700: #fdba74;
+  --color-orange-800: #fdba74;
+
+  --color-blue-50: #0f1e3a;
+  --color-blue-100: #13294d;
+  --color-blue-200: #1e3a8a;
+  --color-blue-700: #93c5fd;
+}
+
+/* Real white text must stay white (it normally sits on green/red buttons). */
+.dark .text-white,
+.dark .hover\:text-white:hover {
+  color: #fff;
+}
+
+/* Brand green is too dark to read on a dark surface. */
+.dark .text-\[\#0a7337\] {
+  color: #4ade80;
+}
+
+/* Red text: lighten, but leave hover states alone (they flip to white on red). */
+.dark .text-red-600:not(:hover),
+.dark .text-red-700:not(:hover) {
+  color: #fca5a5;
+}
+
+/* Overlays that used slate-900 would turn light once the scale is inverted. */
+.dark .bg-slate-900\/50 {
+  background-color: rgb(0 0 0 / 0.6);
+}

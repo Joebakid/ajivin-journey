@@ -11,6 +11,7 @@ import Loader from '@/app/components/Loader';
 import MapSwitcher from '@/app/components/MapSwitcher';
 import EndTripButton from '@/app/components/EndTripButton';
 import Vehicle from '@/app/components/Vehicle';
+import PanicButton from '@/app/components/PanicButton';
 import { ensureVehiclesTable } from '@/app/actions/vehicle';
 import { cancelTripAction, startTripAction, endTripAction } from '@/app/actions/trip';
 
@@ -22,7 +23,6 @@ function statusClasses(status: string) {
   return 'bg-gray-50 text-gray-700 border-gray-200';
 }
 
-// Minimal Server-Side Pagination Component
 function SimplePagination({
   view,
   currentPage,
@@ -117,7 +117,6 @@ async function handleStartTrip(formData: FormData) {
 
 async function handleEndTrip(formData: FormData) {
   'use server';
-  // Use the globally imported action so notifications and routing apply safely
   await endTripAction(formData);
 }
 
@@ -149,7 +148,7 @@ async function DriverDashboardContent({
   ] = await Promise.all([
     sql`SELECT id, name, phone, license_number, role FROM users WHERE id = ${driverId}`,
     sql`
-      SELECT 
+      SELECT
         t.*,
         req.name as requester_name,
         req.phone as requester_phone
@@ -159,9 +158,7 @@ async function DriverDashboardContent({
       ORDER BY t.created_at DESC
       LIMIT 1
     `,
-    // Default conversation: the first manager
     sql`SELECT id, name, role, phone FROM users WHERE role = 'manager' ORDER BY id ASC LIMIT 1`,
-    // Everyone the driver can chat with (all users except themselves)
     sql`SELECT id, name, role, phone FROM users WHERE id <> ${driverId} ORDER BY name ASC`,
     sql`
       SELECT id, driver_id, plate_number, model, is_active, created_at
@@ -170,20 +167,20 @@ async function DriverDashboardContent({
       ORDER BY is_active DESC, created_at DESC
     `,
     sql`
-      SELECT id, destination, status, fasttrack_code, created_at 
-      FROM trips 
-      WHERE driver_id = ${driverId} 
-      ORDER BY created_at DESC 
+      SELECT id, destination, status, fasttrack_code, created_at
+      FROM trips
+      WHERE driver_id = ${driverId}
+      ORDER BY created_at DESC
       LIMIT 100
     `,
     sql`
-      SELECT 
+      SELECT
         e.id, e.expense_type as category, e.amount, e.description, e.vehicle_plate as plate, u.name as logged_by, e.created_at
       FROM expenses e
       LEFT JOIN users u ON e.driver_id = u.id
       WHERE e.driver_id = ${driverId}
       UNION ALL
-      SELECT 
+      SELECT
         ve.id + 1000000 as id, ve.expense_type as category, ve.amount, ve.description, v.plate_number as plate, ve.logged_by_name as logged_by, ve.created_at
       FROM vehicle_expenses ve
       JOIN vehicles v ON ve.vehicle_id = v.id
@@ -225,7 +222,6 @@ async function DriverDashboardContent({
     ? `${activeVehicle.model} (${activeVehicle.plate_number})`
     : driver.license_number || '';
 
-  // Pagination Logic
   const itemsPerPage = 8;
   const historyPages = Math.ceil(driverTrips.length / itemsPerPage);
   const paginatedTrips = driverTrips.slice(
@@ -239,11 +235,66 @@ async function DriverDashboardContent({
     currentPage * itemsPerPage
   );
 
+  // A trip that is in transit: the live tracker should be running for it
+  const tripInTransit = Boolean(
+    currentTrip && (currentTrip.is_started || currentTrip.status === 'En Route')
+  );
+
   return (
     <div className="w-full flex justify-center p-4 sm:p-6 pb-20">
-      {/* max-w-3xl keeps the UI tight and focused, mx-auto centers it */}
       <div className="max-w-3xl w-full space-y-6">
-        {/* PAGE 1: CURRENT JOURNEY & NEW REQUEST */}
+
+        {/* PAGE 1: DEDICATED PANIC SOS VIEW */}
+        {activeView === 'panic' && (
+          <div className="bg-red-50 rounded-[24px] p-6 sm:p-10 shadow-[0_8px_30px_rgb(220,38,38,0.15)] border-2 border-red-200 text-center space-y-6">
+            <div>
+              <h2 className="text-3xl font-black text-red-700 tracking-tight uppercase animate-pulse">Emergency SOS</h2>
+              <p className="text-sm text-red-600/80 mt-2 font-medium">
+                Use this ONLY in case of a severe emergency, accident, or security threat.
+                Triggering this will immediately alert all managers with your current trip details and location.
+              </p>
+            </div>
+
+            <div className="py-6">
+              <PanicButton
+                driverId={driverId}
+                driverName={driver.name}
+                tripId={currentTrip?.id}
+                currentLocation={currentTrip?.current_location}
+              />
+            </div>
+
+            {/* Keeps the live GPS broadcast running while the driver is on this page,
+                so managers can follow the vehicle during an emergency. */}
+            {tripInTransit && currentTrip && (
+              <div className="space-y-2 text-left">
+                <p className="text-[11px] font-bold text-red-500 uppercase tracking-widest">
+                  Your live location is shared with management
+                </p>
+                <div className="rounded-2xl overflow-hidden border border-red-100">
+                  <MapSwitcher
+                    tripId={currentTrip.id}
+                    currentLocation={currentTrip.current_location}
+                    driverName={driver.name}
+                    startedAt={currentTrip.started_at}
+                    isManagerView={false}
+                  />
+                </div>
+              </div>
+            )}
+
+            <div className="bg-white/80 p-5 rounded-2xl text-xs text-red-900 font-medium text-left border border-red-100">
+              <p className="mb-2 font-bold tracking-wider text-[10px] uppercase text-red-500">What happens when you press this:</p>
+              <ul className="list-disc pl-5 space-y-1.5">
+                <li>A high-priority alert is sent to all Dispatch Managers with your location, trip, passenger and vehicle details.</li>
+                <li>An emergency message is sent to Management in chat.</li>
+                <li>Your live location keeps updating for managers while you stay on this page.</li>
+              </ul>
+            </div>
+          </div>
+        )}
+
+        {/* PAGE 2: CURRENT JOURNEY & NEW REQUEST */}
         {activeView === 'journey' && (
           <div className="space-y-6">
             <div className="bg-white rounded-[24px] p-6 sm:p-8 shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-gray-100">
@@ -334,7 +385,7 @@ async function DriverDashboardContent({
                     </div>
                   )}
 
-                  {(currentTrip.is_started || currentTrip.status === 'En Route') && (
+                  {tripInTransit && (
                     <div className="space-y-6 pt-2">
                       <div className="rounded-2xl overflow-hidden border border-gray-100 shadow-sm">
                         <MapSwitcher
@@ -349,8 +400,6 @@ async function DriverDashboardContent({
                         <p className="text-xs text-gray-500 text-center font-medium">
                           Tap End Trip when you arrive. Your manager and passenger will be notified.
                         </p>
-                        {/* No transform wrapper around EndTripButton, so the modal's
-                            position: fixed is relative to the viewport again */}
                         <form action={handleEndTrip}>
                           <input type="hidden" name="trip_id" value={currentTrip.id} />
                           <input type="hidden" name="driver_id" value={driverId} />
@@ -457,15 +506,15 @@ async function DriverDashboardContent({
           </div>
         )}
 
-        {/* PAGE 2: ASSIGNED VEHICLE */}
+        {/* PAGE 3: ASSIGNED VEHICLE */}
         {activeView === 'vehicle' && <Vehicle driverId={driverId} vehicles={vehicles} />}
 
-        {/* PAGE 3: SUBMIT NEW EXPENSE */}
+        {/* PAGE 4: SUBMIT NEW EXPENSE */}
         {activeView === 'log-expense' && (
           <ExpenseForm driverId={driverId.toString()} vehicles={vehicles} />
         )}
 
-        {/* PAGE 4: EXPENSES & REPAIRS LOG */}
+        {/* PAGE 5: EXPENSES & REPAIRS LOG */}
         {activeView === 'expenses' && (
           <div className="bg-white rounded-[24px] shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-gray-100 overflow-hidden">
             <div className="p-6 sm:p-8 bg-gray-50/50 border-b border-gray-100 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
@@ -537,7 +586,7 @@ async function DriverDashboardContent({
           </div>
         )}
 
-        {/* PAGE 5: MY JOURNEY LOG */}
+        {/* PAGE 6: MY JOURNEY LOG */}
         {activeView === 'history' && (
           <div className="bg-white rounded-[24px] p-6 sm:p-8 shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-gray-100">
             <div className="flex justify-between items-center mb-6">
@@ -592,7 +641,7 @@ async function DriverDashboardContent({
           </div>
         )}
 
-        {/* PAGE 6: DISPATCH CHAT */}
+        {/* PAGE 7: DISPATCH CHAT */}
         {activeView === 'chat' && (
           <div className="h-[calc(100vh-140px)] bg-white rounded-[24px] shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-gray-100 overflow-hidden flex flex-col">
             <ChatSystem
