@@ -12,6 +12,7 @@ import MapSwitcher from '@/app/components/MapSwitcher';
 import EndTripButton from '@/app/components/EndTripButton';
 import Vehicle from '@/app/components/Vehicle';
 import PanicButton from '@/app/components/PanicButton';
+import AutoRefresh from '@/app/components/AutoRefresh';
 import { ensureVehiclesTable } from '@/app/actions/vehicle';
 import { cancelTripAction, startTripAction, endTripAction } from '@/app/actions/trip';
 
@@ -241,7 +242,11 @@ async function DriverDashboardContent({
   );
 
   return (
-    <div className="w-full flex justify-center p-4 sm:p-6 pb-20">
+    <div className="w-full flex justify-center p-4 sm:p-6 pb-20 relative">
+      
+      {/* Auto-sync background updates (e.g. manager assigns a trip) */}
+      <AutoRefresh intervalMs={15000} />
+
       <div className="max-w-3xl w-full space-y-6">
 
         {/* PAGE 1: DEDICATED PANIC SOS VIEW */}

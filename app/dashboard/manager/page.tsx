@@ -216,7 +216,8 @@ async function ManagerDashboardContent({
             v.plate_number as vehicle_plate,
             ve.created_at
           FROM vehicle_expenses ve
-          LEFT JOIN vehicles v ON v.driver_id = u.id AND v.is_active = TRUE)
+          LEFT JOIN vehicles v ON ve.vehicle_id = v.id
+          WHERE v.driver_id = ${selectedUserId}
              OR ve.logged_by_name ILIKE (SELECT '%' || name || '%' FROM users WHERE id = ${selectedUserId} LIMIT 1)
           ORDER BY created_at DESC
         `
@@ -540,7 +541,33 @@ async function ManagerDashboardContent({
               <h3 className="text-2xl font-bold text-gray-900 tracking-tight">Active Journeys & Live Map</h3>
               <p className="text-sm text-gray-500 mt-1">Track ongoing fleet trips in real-time.</p>
             </div>
-            <ActiveJourneys trips={activeTrips as any} initialTripId={initialTripId} />
+            
+            {/* Find the selected trip so we can check its status */}
+            {(() => {
+              const selectedTripObj = activeTrips.find(t => t.id === initialTripId);
+              
+              if (selectedTripObj && !selectedTripObj.is_started) {
+                return (
+                  <div className="bg-white rounded-[24px] shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-gray-100 p-8 text-center space-y-4">
+                    <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-orange-100 text-orange-500 mb-2">
+                      <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                        <circle cx="12" cy="12" r="10"></circle>
+                        <polyline points="12 6 12 12 16 14"></polyline>
+                      </svg>
+                    </div>
+                    <h4 className="text-xl font-bold text-gray-900">Trip Not Started Yet</h4>
+                    <p className="text-sm text-gray-500 max-w-md mx-auto">
+                      Driver <span className="font-semibold text-gray-700">{selectedTripObj.driver_name}</span> has been dispatched to <span className="font-semibold text-gray-700">{selectedTripObj.destination}</span>, but they have not tapped "Start Trip" on their app yet.
+                    </p>
+                    <p className="text-xs text-gray-400 font-medium">
+                      The live map will appear here as soon as the driver begins the journey.
+                    </p>
+                  </div>
+                );
+              }
+              
+              return <ActiveJourneys trips={activeTrips as any} initialTripId={initialTripId} />;
+            })()}
           </div>
         )}
 
