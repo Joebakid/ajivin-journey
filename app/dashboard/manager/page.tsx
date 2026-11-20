@@ -421,7 +421,7 @@ async function ManagerDashboardContent({ params }: { params: SearchParams }) {
                 href="/dashboard/manager?view=sos"
                 className="w-full text-center bg-white text-red-700 font-black px-6 py-3 rounded-xl hover:bg-red-50 active:scale-95 transition-all shadow-lg text-sm tracking-wide"
               >
-                View location & trip details
+                View location &amp; trip details
               </Link>
               {activeView !== 'chat' && (
                 <Link
@@ -566,7 +566,7 @@ async function ManagerDashboardContent({ params }: { params: SearchParams }) {
         {isActive && (
           <div className="space-y-6">
             <div className="mb-2 text-center sm:text-left">
-              <h3 className="text-2xl font-bold text-gray-900 tracking-tight">Active Journeys & Live Map</h3>
+              <h3 className="text-2xl font-bold text-gray-900 tracking-tight">Active Journeys &amp; Live Map</h3>
               <p className="text-sm text-gray-500 mt-1">Track ongoing fleet trips in real-time.</p>
             </div>
 
@@ -584,7 +584,7 @@ async function ManagerDashboardContent({ params }: { params: SearchParams }) {
                     </div>
                     <h4 className="text-xl font-bold text-gray-900">Trip Not Started Yet</h4>
                     <p className="text-sm text-gray-500 max-w-md mx-auto">
-                      Driver <span className="font-semibold text-gray-700">{selectedTripObj.driver_name}</span> has been dispatched to <span className="font-semibold text-gray-700">{selectedTripObj.destination}</span>, but they have not tapped "Start Trip" on their app yet.
+                      Driver <span className="font-semibold text-gray-700">{selectedTripObj.driver_name}</span> has been dispatched to <span className="font-semibold text-gray-700">{selectedTripObj.destination}</span>, but they have not tapped &quot;Start Trip&quot; on their app yet.
                     </p>
                     <p className="text-xs text-gray-400 font-medium">
                       The live map will appear here as soon as the driver begins the journey.
@@ -602,7 +602,7 @@ async function ManagerDashboardContent({ params }: { params: SearchParams }) {
         {isFleet && (
           <div className="space-y-6">
             <div className="mb-2 text-center sm:text-left">
-              <h3 className="text-2xl font-bold text-gray-900 tracking-tight">Vehicle Fleet & Expenses</h3>
+              <h3 className="text-2xl font-bold text-gray-900 tracking-tight">Vehicle Fleet &amp; Expenses</h3>
               <p className="text-sm text-gray-500 mt-1">Manage vehicles, assign drivers, and monitor fleet expenses.</p>
             </div>
             <VehicleFleetManager

@@ -20,6 +20,7 @@ import {
   FiBell,
   FiLogOut,
   FiChevronRight,
+  FiChevronLeft,
   FiAlertTriangle,
 } from 'react-icons/fi';
 import { IconType } from 'react-icons';
@@ -143,7 +144,6 @@ export default function DashboardHamburgerShell({
 
   return (
     <div className="min-h-[calc(100vh-55px)] bg-slate-50 flex flex-col relative">
-
       {/* Invisible backdrop for Notifications Modal */}
       {isNotifOpen && (
         <div
@@ -152,10 +152,9 @@ export default function DashboardHamburgerShell({
         />
       )}
 
-      {/* Top Navbar */}
-      <header className="sticky top-0 z-40 bg-white border-b border-slate-200 shadow-xs">
-        <Container className="h-16 flex items-center justify-between gap-4">
-
+      {/* Top Notch Navbar */}
+      <header className="sticky top-0 z-40 w-full flex justify-center px-3 sm:px-6 pointer-events-none !bg-transparent !border-0 !shadow-none">
+        <div className="pointer-events-auto w-full max-w-4xl bg-white border-x border-b border-slate-200 rounded-b-2xl sm:rounded-b-3xl shadow-md px-4 sm:px-6 h-16 flex items-center justify-between gap-4">
           {/* Left: Hamburger + Brand + Active Page Title */}
           <div className="flex items-center gap-3 min-w-0">
             <button
@@ -178,7 +177,6 @@ export default function DashboardHamburgerShell({
 
           {/* Right: Theme + Notifications + User Profile Pill + Logout */}
           <div className="flex items-center gap-2 sm:gap-3 shrink-0">
-
             <ThemeToggle />
 
             {/* Notification Bell with Dropdown Modal */}
@@ -288,7 +286,7 @@ export default function DashboardHamburgerShell({
               <span className="hidden sm:inline">{isLoggingOut ? 'Signing out...' : 'Logout'}</span>
             </button>
           </div>
-        </Container>
+        </div>
       </header>
 
       {/* Dark Backdrop Overlay for Mobile Hamburger Menu */}
@@ -299,14 +297,23 @@ export default function DashboardHamburgerShell({
         />
       )}
 
-      {/* Slide-out Hamburger Drawer */}
+      {/* Curved Notch Slide-out Hamburger Drawer */}
       <aside
-        className={`fixed top-0 left-0 z-50 h-full w-80 bg-white border-r border-slate-200 shadow-2xl transform transition-transform duration-300 ease-in-out flex flex-col ${
-          isOpen ? 'translate-x-0' : '-translate-x-full'
+        className={`fixed top-3 bottom-3 left-0 z-50 w-80 max-w-[85vw] bg-white border-y border-r border-slate-200 rounded-r-[2rem] shadow-2xl transform transition-transform duration-300 ease-in-out flex flex-col ${
+          isOpen ? 'translate-x-0' : '-translate-x-[calc(100%+2rem)]'
         }`}
       >
+        {/* Curved Side-Notch Pull/Close Tab */}
+        <button
+          onClick={() => setIsOpen(false)}
+          aria-label="Close navigation drawer"
+          className="absolute top-1/2 -translate-y-1/2 -right-7 w-7 h-20 bg-white border-y border-r border-slate-200 rounded-r-2xl shadow-md flex items-center justify-center text-slate-400 hover:text-[#0a7337] transition-colors cursor-pointer"
+        >
+          <FiChevronLeft className="w-4 h-4" />
+        </button>
+
         {/* Drawer User Header */}
-        <div className="p-5 border-b border-slate-100 flex items-center justify-between bg-slate-50/70">
+        <div className="p-5 border-b border-slate-100 flex items-center justify-between bg-slate-50/70 rounded-tr-[2rem]">
           <div className="flex items-center gap-3 min-w-0">
             <div className="w-10 h-10 rounded-xl bg-[#0a7337] text-white flex items-center justify-center text-base font-black uppercase shadow-xs shrink-0">
               {userName.charAt(0)}
@@ -356,7 +363,7 @@ export default function DashboardHamburgerShell({
                 key={item.key}
                 href={item.href}
                 onClick={() => setIsOpen(false)}
-                className={`group flex items-center justify-between px-3.5 py-3 rounded-xl text-sm font-semibold transition-all ${baseStyles}`}
+                className={`group flex items-center justify-between px-3.5 py-3 rounded-2xl text-sm font-semibold transition-all ${baseStyles}`}
               >
                 <div className="flex items-center gap-3 min-w-0">
                   <Icon
@@ -385,11 +392,11 @@ export default function DashboardHamburgerShell({
         </nav>
 
         {/* Drawer Footer with Prominent Full-Width Logout Button */}
-        <div className="p-4 border-t border-slate-200 bg-slate-50">
+        <div className="p-4 border-t border-slate-200 bg-slate-50 rounded-br-[2rem]">
           <button
             onClick={handleLogout}
             disabled={isLoggingOut}
-            className="w-full flex items-center justify-center gap-2 py-3 px-4 rounded-xl text-xs font-bold text-red-600 bg-red-50 hover:bg-red-600 hover:text-white border border-red-200 hover:border-red-600 transition-all active:scale-95 cursor-pointer shadow-2xs"
+            className="w-full flex items-center justify-center gap-2 py-3 px-4 rounded-2xl text-xs font-bold text-red-600 bg-red-50 hover:bg-red-600 hover:text-white border border-red-200 hover:border-red-600 transition-all active:scale-95 cursor-pointer shadow-2xs"
           >
             <FiLogOut className="w-4 h-4" />
             <span>{isLoggingOut ? 'Signing Out...' : 'Sign Out of Account'}</span>
