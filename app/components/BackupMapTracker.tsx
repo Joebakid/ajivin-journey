@@ -1,3 +1,4 @@
+// app/components/BackupMapTracker.tsx
 'use client';
 
 import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
@@ -226,7 +227,7 @@ const IconCheck = (p: { size?: number; className?: string }) => (
 );
 const IconExternal = (p: { size?: number; className?: string }) => (
   <Icon {...p}>
-    <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+    <path d="M18 13v6a2 2 0 0 1-2-2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
     <polyline points="15 3 21 3 21 9" />
     <line x1="10" y1="14" x2="21" y2="3" />
   </Icon>
@@ -235,6 +236,16 @@ const IconClock = (p: { size?: number; className?: string }) => (
   <Icon {...p}>
     <circle cx="12" cy="12" r="10" />
     <polyline points="12 6 12 12 16 14" />
+  </Icon>
+);
+const IconMaximize = (p: { size?: number; className?: string }) => (
+  <Icon {...p}>
+    <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3" />
+  </Icon>
+);
+const IconMinimize = (p: { size?: number; className?: string }) => (
+  <Icon {...p}>
+    <path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3" />
   </Icon>
 );
 const IconCrosshair = (p: { size?: number; className?: string }) => (
@@ -476,14 +487,12 @@ out center 40;`;
       container: mapContainerRef.current,
       style: styleUrl,
       center: coords,
-      zoom: DEFAULT_ZOOM, // Always starts at regional town overview
+      zoom: DEFAULT_ZOOM,
       attributionControl: false,
     });
 
-    // Add navigation controls (+ / - buttons)
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'bottom-right');
 
-    // Custom Vehicle DOM Marker with subtle radar pulse
     const el = document.createElement('div');
     el.className = 'vector-vehicle-marker';
     el.innerHTML = `
@@ -507,7 +516,6 @@ out center 40;`;
     map.on('dragstart', () => setIsFollowing(false));
 
     map.on('load', () => {
-      // Dynamic GPS Accuracy Circle
       map.addSource('accuracy-area', {
         type: 'geojson',
         data: createGeoJSONCircle(coords, motion.accuracy || 25),
@@ -693,41 +701,56 @@ out center 40;`;
         @keyframes vec-pulse { 0% { transform: scale(0.6); opacity: 0.9; } 100% { transform: scale(1.6); opacity: 0; } }
       `}</style>
 
-      {/* Header */}
-      <div className="px-4 py-3 bg-[#0d1013] border-b border-slate-800 flex flex-wrap items-center justify-between gap-2 shrink-0">
-        <div className="flex items-center gap-2.5 min-w-0">
-          <span className="relative flex h-2.5 w-2.5 shrink-0">
-            {hasFix && !isStale && (
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
-            )}
-            <span className={`relative inline-flex h-2.5 w-2.5 rounded-full ${!hasFix ? 'bg-slate-500' : isStale ? 'bg-amber-400' : 'bg-blue-500'}`} />
-          </span>
+      {/* Header Container - Re-styled for mobile wrap */}
+      <div className="px-3 sm:px-4 py-3 bg-[#0d1013] border-b border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shrink-0">
+        
+        {/* Top row / Left side: Title and status */}
+        <div className="flex items-center justify-between sm:justify-start gap-3 w-full sm:w-auto">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <span className="relative flex h-2.5 w-2.5 shrink-0">
+              {hasFix && !isStale && (
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
+              )}
+              <span className={`relative inline-flex h-2.5 w-2.5 rounded-full ${!hasFix ? 'bg-slate-500' : isStale ? 'bg-amber-400' : 'bg-blue-500'}`} />
+            </span>
 
-          <div className="min-w-0">
-            <div className="flex items-center gap-1.5">
-              <span className="text-xs font-bold text-slate-100 truncate">
-                {isManagerView ? `${driverName}'s Journey` : 'Backup Vector Map'}
-              </span>
-              <span className="text-[9px] bg-blue-900/50 text-blue-300 border border-blue-700/60 px-1.5 py-0.5 rounded font-semibold uppercase">
-                MapLibre
-              </span>
+            <div className="min-w-0">
+              <div className="flex items-center gap-1.5 pr-2">
+                <span className="text-xs sm:text-sm font-bold text-slate-100 truncate">
+                  {isManagerView ? `${driverName}'s location` : 'Your location'}
+                </span>
+                <span className="hidden sm:inline text-[9px] bg-blue-900/50 text-blue-300 border border-blue-700/60 px-1.5 py-0.5 rounded font-semibold uppercase shrink-0">
+                  MapLibre
+                </span>
+              </div>
+              <p className="text-[10px] sm:text-[11px] text-slate-400 truncate">
+                {!hasFix ? 'Waiting for GPS' : isStale ? `Delayed (${secondsSinceUpdate}s ago)` : 'Live High-Res Vector'}
+              </p>
             </div>
-            <p className="text-[10px] text-slate-400 truncate">
-              {!hasFix ? 'Waiting for GPS' : isStale ? `Delayed (${secondsSinceUpdate}s ago)` : 'Live High-Res Vector'}
-            </p>
           </div>
+          
+          {/* Mobile-only quick expand button */}
+          <button
+            type="button"
+            onClick={() => setIsExpanded((v) => !v)}
+            className="sm:hidden p-2 text-slate-300 hover:text-white bg-slate-800 rounded-lg active:scale-95"
+            aria-label={isExpanded ? 'Minimize' : 'Expand'}
+          >
+            {isExpanded ? <IconMinimize size={14} /> : <IconMaximize size={14} />}
+          </button>
+        </div>
 
+        {/* Bottom row / Right side: Controls */}
+        <div className="flex items-center justify-between sm:justify-end gap-2 sm:gap-2.5 w-full sm:w-auto overflow-x-auto pb-1 sm:pb-0 scrollbar-hide">
           {elapsedSeconds !== null && (
-            <span className="text-[10px] bg-slate-800 border border-slate-700 px-2 py-0.5 rounded text-emerald-400 font-mono flex items-center gap-1">
+            <span className="shrink-0 text-[10px] sm:text-[11px] bg-slate-800 border border-slate-700 px-2 py-1 rounded text-emerald-400 font-mono flex items-center gap-1">
               <IconClock size={11} />
               {formatElapsed(elapsedSeconds)}
             </span>
           )}
-        </div>
 
-        <div className="flex items-center gap-2">
           {/* Style Selector */}
-          <div className="flex items-center rounded-lg bg-slate-800 p-0.5 border border-slate-700">
+          <div className="shrink-0 flex items-center rounded-lg bg-slate-800 p-0.5 border border-slate-700">
             <button
               type="button"
               onClick={() => setActiveStyle('liberty')}
@@ -752,7 +775,7 @@ out center 40;`;
             <button
               type="button"
               onClick={onSwitchBack}
-              className="text-[11px] font-semibold bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 px-2.5 py-1.5 rounded-lg transition-all"
+              className="shrink-0 text-[10px] sm:text-[11px] font-semibold bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 px-2.5 py-1.5 rounded-lg transition-all"
             >
               Primary
             </button>
@@ -761,7 +784,7 @@ out center 40;`;
           <button
             type="button"
             onClick={recenter}
-            className={`text-[11px] font-semibold px-2.5 py-1.5 rounded-lg transition-all flex items-center gap-1.5 ${
+            className={`shrink-0 text-[10px] sm:text-[11px] font-semibold px-2 py-1.5 rounded-lg transition-all flex items-center gap-1 active:scale-95 ${
               isFollowing ? 'bg-[#0a7337] text-white' : 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
             }`}
           >
@@ -769,18 +792,20 @@ out center 40;`;
             {isFollowing ? 'Following' : 'Recenter'}
           </button>
 
+          {/* Desktop-only expand button */}
           <button
             type="button"
             onClick={() => setIsExpanded((v) => !v)}
-            className="text-[11px] font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 px-2.5 py-1.5 rounded-lg"
+            className="hidden sm:flex text-[11px] font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 px-2.5 py-1.5 rounded-lg transition-all items-center gap-1.5"
           >
+            {isExpanded ? <IconMinimize size={12} /> : <IconMaximize size={12} />}
             {isExpanded ? 'Minimize' : 'Expand'}
           </button>
         </div>
       </div>
 
       {/* Map Surface */}
-      <div className={`relative w-full bg-slate-900 ${isExpanded ? 'flex-1 min-h-[300px]' : 'h-[320px]'}`}>
+      <div className={`relative w-full bg-slate-900 transition-all ${isExpanded ? 'flex-1 min-h-[400px]' : 'h-[350px] sm:h-[400px]'}`}>
         <div ref={mapContainerRef} className="w-full h-full z-0" />
 
         {!hasFix && (
@@ -793,19 +818,19 @@ out center 40;`;
         )}
 
         {/* Floating Metrics Overlays */}
-        <div className="absolute top-3 left-3 z-10 bg-slate-900/90 backdrop-blur-md border border-slate-700/80 px-2.5 py-1 rounded-lg text-xs shadow flex items-center gap-2">
+        <div className="absolute top-3 left-3 z-10 bg-slate-900/90 backdrop-blur-md border border-slate-700/80 px-2 sm:px-2.5 py-1 rounded-lg text-[10px] sm:text-xs shadow flex items-center gap-2 pointer-events-none">
           <span className="text-slate-400">Speed:</span>
           <span className="font-bold text-white font-mono">{speedKmh} km/h</span>
           {motion.accuracy && (
-            <span className="text-[10px] text-slate-400 border-l border-slate-700 pl-2">
+            <span className="text-[9px] sm:text-[10px] text-slate-400 border-l border-slate-700 pl-2">
               ±{Math.round(motion.accuracy)}m
             </span>
           )}
         </div>
 
-        <div className="absolute bottom-3 left-3 z-10 bg-slate-900/90 backdrop-blur-md border border-slate-700/80 px-3.5 py-2 rounded-xl text-xs max-w-[calc(100%-4.5rem)] shadow-lg">
-          <span className="block text-[10px] text-slate-400 uppercase tracking-wide">Vehicle Position</span>
-          <p className="font-semibold text-slate-100 truncate text-sm mt-0.5">
+        <div className="absolute bottom-3 left-3 z-10 bg-slate-900/90 backdrop-blur-md border border-slate-700/80 px-3 py-1.5 rounded-xl text-xs max-w-[calc(100%-4.5rem)] shadow-lg pointer-events-none">
+          <span className="block text-[9px] sm:text-[10px] text-slate-400 uppercase tracking-wide">Vehicle Position</span>
+          <p className="font-semibold text-slate-100 truncate text-xs sm:text-sm mt-0.5">
             {address?.street || 'Effurun'}
           </p>
         </div>
@@ -813,27 +838,27 @@ out center 40;`;
 
       {/* Details & Landmarks Container */}
       <div className={`bg-[#14181c] border-t border-slate-800 shrink-0 ${isExpanded ? 'max-h-[48vh] overflow-y-auto' : ''}`}>
-        <div className="p-4 space-y-3">
+        <div className="p-3 sm:p-4 space-y-3">
           {/* Address Card */}
-          <section className="rounded-xl border border-slate-700/70 bg-gradient-to-br from-[#17202a] to-[#14181c] p-4">
+          <section className="rounded-xl border border-slate-700/70 bg-gradient-to-br from-[#17202a] to-[#14181c] p-3 sm:p-4">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2 mb-1.5">
-                  <span className="flex items-center gap-1.5 text-xs font-semibold text-blue-300">
+                <div className="flex flex-wrap items-center gap-2 mb-1.5">
+                  <span className="flex items-center gap-1.5 text-[11px] sm:text-xs font-semibold text-blue-300">
                     <IconPin size={13} />
                     Verified Vector Address
                   </span>
-                  <span className="text-[10px] font-medium border border-blue-500/40 bg-blue-500/10 text-blue-300 px-2 py-0.5 rounded-full">
+                  <span className="text-[9px] sm:text-[10px] font-medium border border-blue-500/40 bg-blue-500/10 text-blue-300 px-2 py-0.5 rounded-full">
                     {address?.precision === 'exact' ? 'Exact Match' : 'Area Match'}
                   </span>
                 </div>
 
-                <p className="text-lg font-semibold text-white leading-snug break-words">
+                <p className="text-base sm:text-lg font-semibold text-white leading-snug break-words">
                   {address?.street || 'Effurun'}
                 </p>
-                {address?.area && <p className="text-sm text-slate-300 mt-0.5">{address.area}</p>}
+                {address?.area && <p className="text-[11px] sm:text-sm text-slate-300 mt-0.5 break-words">{address.area}</p>}
 
-                <p className="mt-2 text-[11px] font-mono text-slate-400 flex gap-x-4">
+                <p className="mt-2 pt-2 border-t border-slate-700/60 text-[9px] sm:text-[11px] font-mono text-slate-400 flex gap-x-4">
                   <span>Lat {coords[1].toFixed(6)}</span>
                   <span>Lng {coords[0].toFixed(6)}</span>
                 </p>
@@ -844,7 +869,7 @@ out center 40;`;
                   type="button"
                   onClick={copyAddress}
                   disabled={!hasFix}
-                  className="text-[11px] font-semibold bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-100 border border-slate-600 px-2.5 py-1.5 rounded-lg transition-all flex items-center justify-center gap-1.5"
+                  className="text-[10px] sm:text-[11px] font-semibold bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-100 border border-slate-600 px-2.5 py-1.5 rounded-lg transition-all flex items-center justify-center gap-1.5"
                 >
                   {copied ? <IconCheck size={12} className="text-green-400" /> : <IconCopy size={12} />}
                   {copied ? 'Copied' : 'Copy'}
@@ -853,7 +878,7 @@ out center 40;`;
                   href={`https://www.google.com/maps/search/?api=1&query=${coords[1]},${coords[0]}`}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="text-[11px] font-semibold bg-[#0a7337] hover:bg-[#085a2b] text-white px-2.5 py-1.5 rounded-lg transition-all flex items-center justify-center gap-1.5"
+                  className="text-[10px] sm:text-[11px] font-semibold bg-[#0a7337] hover:bg-[#085a2b] text-white px-2.5 py-1.5 rounded-lg transition-all flex items-center justify-center gap-1.5"
                 >
                   <IconExternal size={12} />
                   Google App
@@ -863,50 +888,50 @@ out center 40;`;
           </section>
 
           {/* Movement Stats */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-            <div className="bg-[#1a1f24] p-3 rounded-xl border border-slate-800">
-              <span className="block text-xs text-slate-400 mb-1">Transit Status</span>
-              <div className="font-semibold text-slate-100 text-sm flex items-center gap-2">
-                <span className={`w-2.5 h-2.5 rounded-full ${isMoving ? 'bg-green-500 animate-pulse' : 'bg-amber-400'}`} />
-                {isMoving ? `${speedKmh} km/h (Moving)` : 'Stationary'}
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 sm:gap-3">
+            <div className="bg-[#1a1f24] p-2.5 sm:p-3 rounded-xl border border-slate-800">
+              <span className="block text-[10px] sm:text-xs text-slate-400 mb-1">Transit Status</span>
+              <div className="font-semibold text-slate-100 text-xs sm:text-sm flex items-center gap-1.5">
+                <span className={`w-2 h-2 rounded-full ${isMoving ? 'bg-green-500 animate-pulse' : 'bg-amber-400'} shrink-0`} />
+                {isMoving ? `${speedKmh} km/h` : 'Stationary'}
               </div>
             </div>
 
-            <div className="bg-[#1a1f24] p-3 rounded-xl border border-slate-800">
-              <span className="block text-xs text-slate-400 mb-1">Direction</span>
-              <div className="font-semibold text-slate-100 text-sm flex items-center gap-2">
+            <div className="bg-[#1a1f24] p-2.5 sm:p-3 rounded-xl border border-slate-800">
+              <span className="block text-[10px] sm:text-xs text-slate-400 mb-1">Direction</span>
+              <div className="font-semibold text-slate-100 text-xs sm:text-sm flex items-center gap-1.5">
                 {motion.heading !== null && isMoving ? (
                   <>
                     <IconArrow
-                      size={13}
+                      size={10}
                       className="text-blue-400"
                       style={{ transform: `rotate(${motion.heading - 45}deg)` }}
                     />
-                    {compass(motion.heading)} · {Math.round(motion.heading)}°
+                    {compass(motion.heading)}
                   </>
                 ) : (
-                  <span className="text-slate-400 font-medium">No heading</span>
+                  <span className="text-slate-400 font-medium">-</span>
                 )}
               </div>
             </div>
 
-            <div className="bg-[#1a1f24] p-3 rounded-xl border border-slate-800">
-              <span className="block text-xs text-slate-400 mb-1">Heartbeat</span>
-              <div className="font-semibold text-slate-100 text-sm">
+            <div className="bg-[#1a1f24] p-2.5 sm:p-3 rounded-xl border border-slate-800 col-span-2 sm:col-span-1">
+              <span className="block text-[10px] sm:text-xs text-slate-400 mb-1">Heartbeat</span>
+              <div className="font-semibold text-slate-100 text-xs sm:text-sm">
                 {lastUpdateMs ? `${secondsSinceUpdate}s ago` : 'Waiting for fix'}
               </div>
             </div>
           </div>
 
           {/* Landmarks Section */}
-          <section className="rounded-xl border border-slate-800 bg-[#1a1f24] p-4">
+          <section className="rounded-xl border border-slate-800 bg-[#1a1f24] p-3 sm:p-4">
             <div className="flex items-baseline justify-between gap-2 mb-1">
-              <h4 className="text-sm font-semibold text-slate-100">Nearby Landmarks & POIs</h4>
-              <span className="text-[11px] text-slate-400">Within {LANDMARK_RADIUS_M} m</span>
+              <h4 className="text-xs sm:text-sm font-semibold text-slate-100">Nearby Landmarks & POIs</h4>
+              <span className="text-[10px] sm:text-[11px] text-slate-400 shrink-0">Within {LANDMARK_RADIUS_M}m</span>
             </div>
 
             {proximitySummary && (
-              <p className="text-xs text-blue-300 mb-3 leading-relaxed">
+              <p className="text-[11px] sm:text-xs text-blue-300 mb-3 leading-relaxed">
                 📍 {proximitySummary}
               </p>
             )}
@@ -923,19 +948,19 @@ out center 40;`;
                     >
                       <span className="h-2.5 w-2.5 rounded-full shrink-0" style={{ background: l.color }} />
                       <span className="min-w-0 flex-1">
-                        <span className="block text-sm font-medium text-slate-100 group-hover:text-blue-300 truncate">
+                        <span className="block text-[11px] sm:text-sm font-medium text-slate-100 group-hover:text-blue-300 truncate">
                           {l.name}
                           {i === 0 && (
-                            <span className="ml-2 text-[10px] font-medium text-blue-300 bg-blue-500/15 border border-blue-500/30 px-1.5 py-0.5 rounded-full">
+                            <span className="ml-2 text-[9px] sm:text-[10px] font-medium text-blue-300 bg-blue-500/15 border border-blue-500/30 px-1.5 py-0.5 rounded-full">
                               Nearest
                             </span>
                           )}
                         </span>
-                        <span className="block text-[11px] text-slate-400">{l.category}</span>
+                        <span className="block text-[10px] sm:text-[11px] text-slate-400">{l.category}</span>
                       </span>
                       <span className="shrink-0 text-right">
-                        <span className="block text-sm font-semibold text-slate-100">{formatDistance(l.distance)}</span>
-                        <span className="flex items-center justify-end gap-1 text-[11px] text-slate-400">
+                        <span className="block text-xs sm:text-sm font-semibold text-slate-100">{formatDistance(l.distance)}</span>
+                        <span className="flex items-center justify-end gap-1 text-[10px] sm:text-[11px] text-slate-400">
                           <IconArrow size={10} style={{ transform: `rotate(${l.bearing - 45}deg)` }} />
                           {l.direction}
                         </span>
@@ -950,7 +975,7 @@ out center 40;`;
                 <div className="h-4 bg-slate-700/50 rounded w-1/2" />
               </div>
             ) : (
-              <p className="text-xs text-slate-400 py-2">
+              <p className="text-[10px] sm:text-xs text-slate-400 py-2">
                 No indexed landmarks found within {LANDMARK_RADIUS_M}m of this location.
               </p>
             )}

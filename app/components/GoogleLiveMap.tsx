@@ -4,6 +4,26 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { loadGoogleMaps } from '@/app/components/googleMapsLoader';
 import { useDriverGps } from '@/app/components/useDriverGps';
+import type { ReactNode } from 'react';
+
+/* ---------------------------------- Icons --------------------------------- */
+function Icon({ children, size = 14, className = '' }: { children: ReactNode; size?: number; className?: string }) {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden="true">
+      {children}
+    </svg>
+  );
+}
+const IconPin = (p: { size?: number; className?: string }) => (<Icon {...p}><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z" /><circle cx="12" cy="10" r="3" /></Icon>);
+const IconCopy = (p: { size?: number; className?: string }) => (<Icon {...p}><rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></Icon>);
+const IconCheck = (p: { size?: number; className?: string }) => (<Icon {...p}><polyline points="20 6 9 17 4 12" /></Icon>);
+const IconExternal = (p: { size?: number; className?: string }) => (<Icon {...p}><path d="M18 13v6a2 2 0 0 1-2-2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" /><polyline points="15 3 21 3 21 9" /><line x1="10" y1="14" x2="21" y2="3" /></Icon>);
+const IconClock = (p: { size?: number; className?: string }) => (<Icon {...p}><circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" /></Icon>);
+const IconMaximize = (p: { size?: number; className?: string }) => (<Icon {...p}><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3" /></Icon>);
+const IconMinimize = (p: { size?: number; className?: string }) => (<Icon {...p}><path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3" /></Icon>);
+const IconCrosshair = (p: { size?: number; className?: string }) => (<Icon {...p}><circle cx="12" cy="12" r="10" /><line x1="22" y1="12" x2="18" y2="12" /><line x1="6" y1="12" x2="2" y2="12" /><line x1="12" y1="6" x2="12" y2="2" /><line x1="12" y1="22" x2="12" y2="18" /></Icon>);
+const IconArrow = (p: { size?: number; className?: string; style?: React.CSSProperties }) => (<svg xmlns="http://www.w3.org/2000/svg" width={p.size ?? 12} height={p.size ?? 12} viewBox="0 0 24 24" fill="currentColor" className={p.className} style={p.style} aria-hidden="true"><polygon points="3 11 22 2 13 21 11 13 3 11" /></svg>);
+
 
 /* Types & helpers */
 interface LatLng { lat: number; lng: number; }
@@ -120,7 +140,7 @@ export default function GoogleLiveMap({
 
   // Aggressive auto-dismiss for the Google Maps API key error popup
   useEffect(() => {
-    if (apiKey) return; // Skip if a real key is provided
+    if (apiKey) return;
     const interval = setInterval(() => {
       const dismissBtn = document.querySelector('.dismissButton') as HTMLElement;
       if (dismissBtn) {
@@ -343,8 +363,9 @@ export default function GoogleLiveMap({
   const overLimit = speedKmh !== null && speedKmh > live.limit;
   const speeding = overLimit || live.speeding;
 
-  const statusText = mapError ? 'Google Maps error (showing fallback)' : gps.error && !isManagerView ? gps.error : !hasFix ? isManagerView ? 'Waiting for driver position' : 'Waiting for GPS signal' : stale ? `No update for ${secondsSinceUpdate}s` : 'Live GPS';
+  const statusText = mapError ? 'Google Maps error' : gps.error && !isManagerView ? gps.error : !hasFix ? isManagerView ? 'Waiting for driver' : 'Waiting for GPS' : stale ? `No update for ${secondsSinceUpdate}s` : 'Live GPS';
   const dotClass = !hasFix ? 'bg-slate-500' : stale ? 'bg-amber-400' : 'bg-green-500';
+  const pingClass = !hasFix ? '' : stale ? 'bg-amber-300' : 'bg-green-400';
   const googleMapsUrl = pos ? `https://www.google.com/maps/search/?api=1&query=${pos.lat},${pos.lng}` : '#';
 
   return (
@@ -367,34 +388,64 @@ export default function GoogleLiveMap({
         .widget-scene { display: none !important; }
       `}</style>
       
-      <div className="px-4 py-3 bg-[#0d1013] border-b border-slate-800 flex flex-wrap items-center justify-between gap-2 shrink-0">
-        <div className="flex items-center gap-3 min-w-0">
-          <span className="relative flex h-2.5 w-2.5 shrink-0">
-            {hasFix && !stale && <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75" />}
-            <span className={`relative inline-flex h-2.5 w-2.5 rounded-full ${dotClass}`} />
-          </span>
-          <div className="min-w-0">
-            <div className="flex items-center gap-1.5">
-              <p className="text-sm font-semibold text-slate-100 truncate">{isManagerView ? `${driverName}'s live location` : 'Your live location'}</p>
-              <span className="text-[9px] bg-blue-900/50 text-blue-300 border border-blue-700/60 px-1.5 py-0.5 rounded font-semibold uppercase">Google</span>
+      {/* Header Container - Re-styled for mobile wrap */}
+      <div className="px-3 sm:px-4 py-3 bg-[#0d1013] border-b border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shrink-0">
+        
+        {/* Top row / Left side: Title and status */}
+        <div className="flex items-center justify-between sm:justify-start gap-3 w-full sm:w-auto">
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="relative flex h-2.5 w-2.5 shrink-0 mt-0.5">
+              {hasFix && !stale && <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${pingClass}`} />}
+              <span className={`relative inline-flex h-2.5 w-2.5 rounded-full ${dotClass}`} />
+            </span>
+            <div className="min-w-0">
+              <div className="flex items-center gap-1.5 pr-2">
+                <p className="text-sm font-semibold text-slate-100 truncate">{isManagerView ? `${driverName}'s location` : 'Your location'}</p>
+                <span className="hidden sm:inline text-[9px] bg-blue-900/50 text-blue-300 border border-blue-700/60 px-1.5 py-0.5 rounded font-semibold uppercase shrink-0">Google</span>
+              </div>
+              <p className={`text-[10px] sm:text-[11px] truncate ${stale || mapError || gps.error ? 'text-amber-300' : 'text-slate-400'}`}>{statusText}</p>
             </div>
-            <p className={`text-[11px] truncate ${stale || mapError || gps.error ? 'text-amber-300' : 'text-slate-400'}`}>{statusText}</p>
           </div>
+          
+          {/* Mobile-only quick expand button */}
+          <button
+            type="button"
+            onClick={() => setIsExpanded((v) => !v)}
+            className="sm:hidden p-2 text-slate-300 hover:text-white bg-slate-800 rounded-lg active:scale-95"
+            aria-label={isExpanded ? 'Minimise' : 'Expand'}
+          >
+            {isExpanded ? <IconMinimize size={14} /> : <IconMaximize size={14} />}
+          </button>
         </div>
 
-        <div className="flex items-center gap-2">
-          {elapsedSeconds !== null && <span className="bg-[#0a7337]/25 border border-[#0a7337] text-green-300 font-mono text-[11px] font-semibold px-2.5 py-1 rounded-full">{formatElapsed(elapsedSeconds)}</span>}
-          <div className="flex items-center rounded-lg bg-slate-800 p-0.5 border border-slate-700">
+        {/* Bottom row / Right side: Controls */}
+        <div className="flex items-center justify-between sm:justify-end gap-2 sm:gap-2.5 w-full sm:w-auto overflow-x-auto pb-1 sm:pb-0 scrollbar-hide">
+          {elapsedSeconds !== null && (
+            <span className="shrink-0 bg-[#0a7337]/25 border border-[#0a7337] text-green-300 font-mono text-[10px] sm:text-[11px] font-semibold px-2 py-1 rounded-full flex items-center gap-1">
+              <IconClock size={10} />
+              {formatElapsed(elapsedSeconds)}
+            </span>
+          )}
+          
+          <div className="shrink-0 flex items-center rounded-lg bg-slate-800 p-0.5 border border-slate-700">
             {(['roadmap', 'satellite'] as const).map((t) => (
-              <button key={t} type="button" onClick={() => setMapType(t)} className={`px-2 py-1 text-[10px] font-semibold rounded-md transition-all ${mapType === t ? 'bg-[#0a7337] text-white shadow' : 'text-slate-400 hover:text-white'}`}>{t === 'roadmap' ? 'Road' : 'Satellite'}</button>
+              <button key={t} type="button" onClick={() => setMapType(t)} className={`px-2 py-1 text-[10px] font-semibold rounded-md transition-all ${mapType === t ? 'bg-[#0a7337] text-white shadow' : 'text-slate-400 hover:text-white'}`}>{t === 'roadmap' ? 'Road' : 'Sat'}</button>
             ))}
           </div>
-          <button type="button" onClick={recenter} className={`text-[11px] font-semibold px-2.5 py-1.5 rounded-lg transition-all active:scale-95 ${isFollowing ? 'bg-[#0a7337] hover:bg-[#085a2b] text-white' : 'bg-amber-500/20 border border-amber-400/60 text-amber-200 hover:bg-amber-500/30'}`}>{isFollowing ? 'Following' : 'Recenter'}</button>
-          <button type="button" onClick={() => setIsExpanded((v) => !v)} className="text-[11px] font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700 px-2.5 py-1.5 rounded-lg">{isExpanded ? 'Minimise' : 'Expand'}</button>
+          
+          <button type="button" onClick={recenter} className={`shrink-0 text-[10px] sm:text-[11px] font-semibold px-2 py-1.5 rounded-lg transition-all flex items-center gap-1 active:scale-95 ${isFollowing ? 'bg-[#0a7337] hover:bg-[#085a2b] text-white' : 'bg-amber-500/20 border border-amber-400/60 text-amber-200 hover:bg-amber-500/30'}`}>
+            <IconCrosshair size={12} />
+            {isFollowing ? 'Following' : 'Recenter'}
+          </button>
+          
+          <button type="button" onClick={() => setIsExpanded((v) => !v)} className="hidden sm:flex text-[11px] font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 px-2.5 py-1.5 rounded-lg transition-all items-center gap-1.5">
+            {isExpanded ? <IconMinimize size={12} /> : <IconMaximize size={12} />}
+            {isExpanded ? 'Minimise' : 'Expand'}
+          </button>
         </div>
       </div>
 
-      <div className={`relative w-full bg-slate-900 ${isExpanded ? 'flex-1 min-h-[280px]' : 'h-[340px]'}`}>
+      <div className={`relative w-full bg-slate-900 transition-all ${isExpanded ? 'flex-1 min-h-[400px]' : 'h-[350px] sm:h-[400px]'}`}>
         <div ref={mapElRef} className="w-full h-full" />
         
         {mapError && (
@@ -417,53 +468,97 @@ export default function GoogleLiveMap({
         )}
 
         {hasFix && (
-          <div className={`absolute top-3 left-3 z-[5] rounded-xl px-3 py-2 shadow-lg border backdrop-blur-md ${speeding ? 'bg-red-600/95 border-red-300 animate-pulse' : 'bg-slate-900/90 border-slate-700/80'}`}>
+          <div className={`absolute top-3 left-3 z-[5] rounded-xl px-2 sm:px-3 py-1.5 sm:py-2 shadow-lg border backdrop-blur-md ${speeding ? 'bg-red-600/95 border-red-300 animate-pulse' : 'bg-slate-900/90 border-slate-700/80'}`}>
             <div className="flex items-baseline gap-1">
-              <span className="text-2xl font-black font-mono leading-none">{speedKmh ?? 0}</span>
-              <span className="text-[10px] font-semibold text-slate-200">km/h</span>
+              <span className="text-xl sm:text-2xl font-black font-mono leading-none">{speedKmh ?? 0}</span>
+              <span className="text-[9px] sm:text-[10px] font-semibold text-slate-200">km/h</span>
             </div>
-            <p className={`text-[10px] font-semibold mt-0.5 ${speeding ? 'text-white' : 'text-slate-400'}`}>{speeding ? `SPEEDING · limit ${live.limit}` : `limit ${live.limit}`}</p>
+            <p className={`text-[9px] sm:text-[10px] font-semibold mt-0.5 ${speeding ? 'text-white' : 'text-slate-400'}`}>{speeding ? `SPEEDING · limit ${live.limit}` : `limit ${live.limit}`}</p>
           </div>
         )}
       </div>
 
-      <div className={`bg-[#14181c] border-t border-slate-800 shrink-0 ${isExpanded ? 'max-h-[40vh] overflow-y-auto' : ''}`}>
-        <div className="p-4 space-y-3">
-          <section className="rounded-xl border border-slate-700/70 bg-gradient-to-br from-[#1b2a22] to-[#1a1f24] p-4 flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              <p className="text-xs font-semibold text-green-300 mb-1">Vehicle is at</p>
-              {pos ? (
-                <>
-                  <p className="text-base font-semibold text-white leading-snug break-words">{address || `${pos.lat.toFixed(5)}, ${pos.lng.toFixed(5)}`}</p>
-                  <p className="mt-1 text-[11px] font-mono text-slate-400">{pos.lat.toFixed(6)}, {pos.lng.toFixed(6)}</p>
-                </>
-              ) : <p className="text-sm text-slate-400">The address appears once a position is received.</p>}
+      <div className={`bg-[#14181c] border-t border-slate-800 shrink-0 ${isExpanded ? 'max-h-[48vh] overflow-y-auto' : ''}`}>
+        <div className="p-3 sm:p-4 space-y-3">
+          <section className="rounded-xl border border-slate-700/70 bg-gradient-to-br from-[#1b2a22] to-[#1a1f24] p-3 sm:p-4">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0 flex-1">
+                <p className="text-[10px] sm:text-[11px] font-semibold text-green-300 mb-1 flex items-center gap-1.5">
+                  <IconPin size={12} />
+                  Vehicle is at
+                </p>
+                {pos ? (
+                  <>
+                    <p className="text-base sm:text-lg font-semibold text-white leading-snug break-words">{address || `${pos.lat.toFixed(5)}, ${pos.lng.toFixed(5)}`}</p>
+                  </>
+                ) : <p className="text-xs sm:text-sm text-slate-400">The address appears once a position is received.</p>}
+              </div>
+              <div className="flex flex-col gap-1.5 shrink-0">
+                <button type="button" onClick={copyPosition} disabled={!pos} className="text-[10px] sm:text-[11px] font-semibold bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-100 border border-slate-600 px-2.5 py-1.5 rounded-lg transition-all flex items-center justify-center gap-1.5">
+                  {copied ? <IconCheck size={12} className="text-green-400" /> : <IconCopy size={12} />}
+                  {copied ? 'Copied' : 'Copy'}
+                </button>
+                <a href={googleMapsUrl} target="_blank" rel="noopener noreferrer" className="text-[10px] sm:text-[11px] font-semibold text-center bg-[#0a7337] hover:bg-[#085a2b] text-white px-2.5 py-1.5 rounded-lg transition-all flex items-center justify-center gap-1.5">
+                  <IconExternal size={12} />
+                  Open map
+                </a>
+              </div>
             </div>
-            <div className="flex flex-col gap-1.5 shrink-0">
-              <button type="button" onClick={copyPosition} disabled={!pos} className="text-[11px] font-semibold bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-100 border border-slate-600 px-2.5 py-1.5 rounded-lg">{copied ? 'Copied' : 'Copy'}</button>
-              <a href={googleMapsUrl} target="_blank" rel="noopener noreferrer" className="text-[11px] font-semibold text-center bg-[#0a7337] hover:bg-[#085a2b] text-white px-2.5 py-1.5 rounded-lg">Open map</a>
-            </div>
+            {pos && (
+              <p className="mt-2 pt-2 border-t border-slate-700/60 text-[9px] sm:text-[10px] font-mono text-slate-400 flex flex-wrap gap-x-4">
+                <span>Lat {pos.lat.toFixed(6)}</span>
+                <span>Lng {pos.lng.toFixed(6)}</span>
+              </p>
+            )}
           </section>
 
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-            <div className="bg-[#1a1f24] p-3 rounded-xl border border-slate-800">
-              <span className="block text-xs text-slate-400 mb-1">Speed</span>
-              <div className={`font-semibold text-sm ${speeding ? 'text-red-400' : 'text-slate-100'}`}>{speedKmh === null ? 'Unknown' : isMoving ? `${speedKmh} km/h` : 'Stationary'}</div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-3">
+            <div className="bg-[#1a1f24] p-2.5 sm:p-3 rounded-xl border border-slate-800">
+              <span className="block text-[10px] sm:text-xs text-slate-400 mb-1">Speed</span>
+              <div className={`font-semibold text-xs sm:text-sm flex items-center gap-1.5 ${speeding ? 'text-red-400' : 'text-slate-100'}`}>
+                {isMoving ? (
+                  <>
+                    <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse shrink-0" />
+                    {speedKmh} km/h
+                  </>
+                ) : speedKmh === null ? (
+                  'Unknown'
+                ) : (
+                  <>
+                    <span className="w-2 h-2 rounded-full bg-amber-400 shrink-0" />
+                    Stationary
+                  </>
+                )}
+              </div>
             </div>
-            <div className="bg-[#1a1f24] p-3 rounded-xl border border-slate-800">
-              <span className="block text-xs text-slate-400 mb-1">Top speed</span>
-              <div className="font-semibold text-sm text-slate-100">{live.maxKmh === null ? 'No data' : `${Math.round(live.maxKmh)} km/h`}</div>
+            <div className="bg-[#1a1f24] p-2.5 sm:p-3 rounded-xl border border-slate-800">
+              <span className="block text-[10px] sm:text-xs text-slate-400 mb-1">Top speed</span>
+              <div className="font-semibold text-xs sm:text-sm text-slate-100">{live.maxKmh === null ? 'No data' : `${Math.round(live.maxKmh)} km/h`}</div>
             </div>
-            <div className="bg-[#1a1f24] p-3 rounded-xl border border-slate-800">
-              <span className="block text-xs text-slate-400 mb-1">Heading</span>
-              <div className="font-semibold text-sm text-slate-100">{isMoving && motion.heading !== null ? `${compass(motion.heading)} · ${Math.round(motion.heading)}°` : 'Not moving'}</div>
+            <div className="bg-[#1a1f24] p-2.5 sm:p-3 rounded-xl border border-slate-800">
+              <span className="block text-[10px] sm:text-xs text-slate-400 mb-1">Heading</span>
+              <div className="font-semibold text-xs sm:text-sm text-slate-100 flex items-center gap-1.5">
+                {isMoving && motion.heading !== null ? (
+                  <>
+                    <IconArrow size={10} className="text-green-400" style={{ transform: `rotate(${(motion.heading as number) - 45}deg)` }} />
+                    {compass(motion.heading)}
+                  </>
+                ) : 'Not moving'}
+              </div>
             </div>
-            <div className="bg-[#1a1f24] p-3 rounded-xl border border-slate-800">
-              <span className="block text-xs text-slate-400 mb-1">Last update</span>
-              <div className="font-semibold text-sm text-slate-100">{lastUpdateMs ? `${secondsSinceUpdate}s ago` : 'No data yet'}</div>
+            <div className="bg-[#1a1f24] p-2.5 sm:p-3 rounded-xl border border-slate-800">
+              <span className="block text-[10px] sm:text-xs text-slate-400 mb-1">Last update</span>
+              <div className="font-semibold text-xs sm:text-sm text-slate-100">
+                {lastUpdateMs ? (
+                  <>
+                    {new Date(lastUpdateMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    <span className="text-slate-400 font-normal text-[10px] ml-1.5">({secondsSinceUpdate}s)</span>
+                  </>
+                ) : 'No data yet'}
+              </div>
             </div>
           </div>
-          <p className="text-[10px] text-slate-500 text-center">Map data © Google. Nearby landmarks are available on the Leaflet backup map.</p>
+          <p className="text-[9px] sm:text-[10px] text-slate-500 text-center pb-2">Map data © Google</p>
         </div>
       </div>
     </div>

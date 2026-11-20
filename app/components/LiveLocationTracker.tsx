@@ -1,3 +1,4 @@
+// app/components/LiveLocationTracker.tsx
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -463,15 +464,11 @@ export default function LiveLocationTracker({
     coordsRef.current = coords;
   }, [coords]);
 
-  // Elapsed trip time. The server measures it with the database clock; between polls we
-  // advance it with performance.now(), which is not affected by the device clock.
-  // `now` ticks every second, so this recalculates once a second.
+  // Elapsed trip time.
   const elapsedSeconds = (() => {
     void now;
     const a = elapsedAnchorRef.current;
     if (a) return Math.max(0, Math.floor(a.seconds + (performance.now() - a.perf) / 1000));
-
-    // Fallback until the server answers
     if (!tripStartTime) return null;
     const start = new Date(tripStartTime).getTime();
     if (isNaN(start)) return null;
@@ -686,7 +683,6 @@ export default function LiveLocationTracker({
     const L = window.L;
     if (!L) return;
 
-    // Initialized at DEFAULT_ZOOM (13) to display regional city/place labels
     const map = L.map(mapContainerRef.current, {
       center: coordsRef.current,
       zoom: DEFAULT_ZOOM,
@@ -805,11 +801,8 @@ export default function LiveLocationTracker({
         const raw: LatLng = [pos.coords.latitude, pos.coords.longitude];
         const prev = lastGoodFixRef.current;
 
-        // Ignore stale or out-of-order fixes
         if (prev && fixTime <= prev.t) return;
 
-        // Ignore poor fixes once we have a good one. Before that, wait a short grace period
-        // for a better first fix, then accept the best we can get so the map is never blank.
         if (acc > MAX_ACCEPTABLE_ACCURACY_M) {
           const inGrace = Date.now() - watchStarted < FIRST_FIX_GRACE_MS;
           if (!prev && inGrace) return;
@@ -825,8 +818,6 @@ export default function LiveLocationTracker({
           const moved = distanceM(prev.pos, raw);
           derivedSpeed = dt > 0 ? moved / dt : null;
 
-          // Ignore impossible jumps, but only when the previous fix was a good one.
-          // After 30 seconds a far-away fix is accepted (tunnels, signal loss).
           if (
             derivedSpeed !== null &&
             derivedSpeed > MAX_PLAUSIBLE_SPEED_MS &&
@@ -836,7 +827,6 @@ export default function LiveLocationTracker({
             return;
           }
 
-          // Hold the position while standing still, so drift does not look like movement
           const reportedSpeed = pos.coords.speed ?? derivedSpeed ?? 0;
           if (reportedSpeed < 0.8 && moved < Math.max(acc, 5) * 0.5) {
             position = prev.pos;
@@ -877,8 +867,6 @@ export default function LiveLocationTracker({
     return () => navigator.geolocation.clearWatch(watchId);
   }, [tripId, isManagerView, applyFix]);
 
-  /* ---------------- Driver: keep the screen on so GPS keeps flowing -------- */
-
   useEffect(() => {
     if (isManagerView || typeof navigator === 'undefined' || !('wakeLock' in navigator)) return;
 
@@ -902,7 +890,7 @@ export default function LiveLocationTracker({
     };
   }, [isManagerView]);
 
-  /* ------ Poll the trip: is it still live, how long, where is it ------ */
+  /* ------ Poll the trip ------ */
 
   useEffect(() => {
     let cancelled = false;
@@ -922,7 +910,6 @@ export default function LiveLocationTracker({
 
       if (trip.started_at) setTripStartTime((prev) => prev ?? trip.started_at);
 
-      // Server elapsed time. The reading was taken about halfway through the round trip.
       if (typeof trip.elapsed_seconds === 'number') {
         const sampledAt = (sentAt + receivedAt) / 2;
         const a = elapsedAnchorRef.current;
@@ -939,8 +926,6 @@ export default function LiveLocationTracker({
 
       const parsed = parseRawLocation(trip.current_location);
       if (parsed.hasFix) {
-        // Use the server's age of the position when available, so "last update" does not
-        // depend on the driver's phone clock being right.
         const updatedAt =
           typeof trip.location_age_seconds === 'number'
             ? Date.now() - trip.location_age_seconds * 1000
@@ -1053,34 +1038,49 @@ export default function LiveLocationTracker({
         @media (prefers-reduced-motion: reduce) { .lj-pulse { animation: none; opacity: .5; } }
       `}</style>
 
-      {/* Header */}
-      <div className="px-4 py-3 bg-[#0d1013] border-b border-slate-800 flex flex-wrap items-center justify-between gap-2 shrink-0">
-        <div className="flex items-center gap-3 min-w-0">
-          <span className="relative flex h-2.5 w-2.5 shrink-0">
-            {signal !== 'waiting' && (
-              <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${pingClass}`} />
-            )}
-            <span className={`relative inline-flex h-2.5 w-2.5 rounded-full ${dotClass}`} />
-          </span>
-          <div className="min-w-0">
-            <p className="text-sm font-semibold text-slate-100 truncate">{title}</p>
-            <p className={`text-[11px] ${signal === 'stale' ? 'text-amber-300' : 'text-slate-400'}`}>{statusText}</p>
+      {/* Header Container - Re-styled for better mobile layout, allowing wrap */}
+      <div className="px-3 sm:px-4 py-3 bg-[#0d1013] border-b border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shrink-0">
+        
+        {/* Top row / Left side: Title and status */}
+        <div className="flex items-center justify-between sm:justify-start gap-3 w-full sm:w-auto">
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="relative flex h-2.5 w-2.5 shrink-0 mt-0.5">
+              {signal !== 'waiting' && (
+                <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${pingClass}`} />
+              )}
+              <span className={`relative inline-flex h-2.5 w-2.5 rounded-full ${dotClass}`} />
+            </span>
+            <div className="min-w-0">
+              <p className="text-sm font-semibold text-slate-100 truncate pr-2">{title}</p>
+              <p className={`text-[10px] sm:text-[11px] truncate ${signal === 'stale' ? 'text-amber-300' : 'text-slate-400'}`}>{statusText}</p>
+            </div>
           </div>
+          
+          {/* Mobile-only quick expand button */}
+          <button
+            type="button"
+            onClick={() => setIsExpanded((v) => !v)}
+            className="sm:hidden p-2 text-slate-300 hover:text-white bg-slate-800 rounded-lg active:scale-95"
+            aria-label={isExpanded ? 'Minimise' : 'Expand'}
+          >
+            {isExpanded ? <IconMinimize size={14} /> : <IconMaximize size={14} />}
+          </button>
         </div>
 
-        <div className="flex items-center gap-2">
+        {/* Bottom row / Right side: Controls */}
+        <div className="flex items-center justify-between sm:justify-end gap-2 sm:gap-2.5 w-full sm:w-auto overflow-x-auto pb-1 sm:pb-0 scrollbar-hide">
           {elapsedSeconds !== null && (
             <span
-              className="bg-[#0a7337]/25 border border-[#0a7337] text-green-300 font-mono text-[11px] font-semibold px-2.5 py-1 rounded-full flex items-center gap-1.5"
+              className="shrink-0 bg-[#0a7337]/25 border border-[#0a7337] text-green-300 font-mono text-[10px] sm:text-[11px] font-semibold px-2 py-1 rounded-full flex items-center gap-1"
               title="Time since the trip started"
             >
-              <IconClock size={12} />
+              <IconClock size={10} />
               {formatElapsed(elapsedSeconds)}
             </span>
           )}
 
           {/* Map Provider Switcher Button */}
-          <div className="flex items-center rounded-lg bg-slate-800 p-0.5 border border-slate-700">
+          <div className="shrink-0 flex items-center rounded-lg bg-slate-800 p-0.5 border border-slate-700">
             <button
               type="button"
               onClick={() => setTileLayer('osm')}
@@ -1097,38 +1097,37 @@ export default function LiveLocationTracker({
                 mapProvider === 'satellite' ? 'bg-[#0a7337] text-white shadow' : 'text-slate-400 hover:text-white'
               }`}
             >
-              Satellite
+              Sat
             </button>
           </div>
 
           <button
             type="button"
             onClick={recenterMap}
-            className={`text-[11px] font-semibold px-2.5 py-1.5 rounded-lg transition-all flex items-center gap-1.5 active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-green-400 ${
+            className={`shrink-0 text-[10px] sm:text-[11px] font-semibold px-2 py-1.5 rounded-lg transition-all flex items-center gap-1 active:scale-95 ${
               isFollowing
                 ? 'bg-[#0a7337] hover:bg-[#085a2b] text-white'
                 : 'bg-amber-500/20 border border-amber-400/60 text-amber-200 hover:bg-amber-500/30'
             }`}
-            title="Centre the map on the vehicle and keep following it"
           >
             <IconCrosshair size={12} />
             {isFollowing ? 'Following' : 'Recenter'}
           </button>
 
+          {/* Desktop-only expand button (hidden on mobile to save horizontal space) */}
           <button
             type="button"
             onClick={() => setIsExpanded((v) => !v)}
-            className="text-[11px] font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 px-2.5 py-1.5 rounded-lg transition-all flex items-center gap-1.5 focus:outline-none focus-visible:ring-2 focus-visible:ring-green-400"
-            title={isExpanded ? 'Minimise map' : 'Expand map'}
+            className="hidden sm:flex text-[11px] font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 px-2.5 py-1.5 rounded-lg transition-all items-center gap-1.5"
           >
             {isExpanded ? <IconMinimize size={12} /> : <IconMaximize size={12} />}
-            <span className="hidden sm:inline">{isExpanded ? 'Minimise' : 'Expand'}</span>
+            {isExpanded ? 'Minimise' : 'Expand'}
           </button>
         </div>
       </div>
 
-      {/* Map */}
-      <div className={`relative w-full bg-slate-900 ${isExpanded ? 'flex-1 min-h-[280px]' : 'h-[320px]'}`}>
+      {/* Map Body */}
+      <div className={`relative w-full bg-slate-900 transition-all ${isExpanded ? 'flex-1 min-h-[400px]' : 'h-[350px] sm:h-[400px]'}`}>
         <div ref={mapContainerRef} className="w-full h-full z-0" />
 
         {!hasFix && (
@@ -1146,58 +1145,58 @@ export default function LiveLocationTracker({
         )}
 
         {hasFix && accuracyM !== null && (
-          <div className="absolute top-3 left-3 z-[400] bg-slate-900/90 backdrop-blur-md border border-slate-700/80 px-2.5 py-1 rounded-full text-[11px] flex items-center gap-1.5 shadow">
-            <span className={`font-semibold ${accuracyColor}`}>{accuracyLabel} accuracy</span>
-            <span className="text-slate-400 font-mono">±{accuracyM} m</span>
+          <div className="absolute top-3 left-3 z-[400] bg-slate-900/90 backdrop-blur-md border border-slate-700/80 px-2 py-1 rounded-full text-[10px] flex items-center gap-1 shadow">
+            <span className={`font-semibold ${accuracyColor}`}>{accuracyLabel}</span>
+            <span className="text-slate-400 font-mono">±{accuracyM}m</span>
           </div>
         )}
 
-        <div className="absolute bottom-3 left-3 z-[400] bg-slate-900/90 backdrop-blur-md border border-slate-700/80 px-3.5 py-2 rounded-xl text-xs max-w-[calc(100%-4.5rem)] shadow-lg">
-          <span className="block text-[11px] text-slate-400">Vehicle is at</span>
-          <p className="font-semibold text-slate-100 truncate text-sm mt-0.5">{overlayLabel}</p>
+        <div className="absolute bottom-3 left-3 z-[400] bg-slate-900/90 backdrop-blur-md border border-slate-700/80 px-3 py-1.5 rounded-xl text-xs max-w-[calc(100%-4rem)] shadow-lg pointer-events-none">
+          <span className="block text-[10px] text-slate-400">Vehicle is at</span>
+          <p className="font-semibold text-slate-100 truncate text-xs sm:text-sm mt-0.5">{overlayLabel}</p>
         </div>
       </div>
 
       {/* Details */}
       <div className={`bg-[#14181c] border-t border-slate-800 shrink-0 ${isExpanded ? 'max-h-[48vh] overflow-y-auto' : ''}`}>
-        <div className="p-4 space-y-3">
+        <div className="p-3 sm:p-4 space-y-3">
           {/* Exact address */}
-          <section className="rounded-xl border border-slate-700/70 bg-gradient-to-br from-[#1b2a22] to-[#1a1f24] p-4">
+          <section className="rounded-xl border border-slate-700/70 bg-gradient-to-br from-[#1b2a22] to-[#1a1f24] p-3 sm:p-4">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-2 mb-2">
-                  <span className="flex items-center gap-1.5 text-xs font-semibold text-green-300">
-                    <IconPin size={13} />
+                  <span className="flex items-center gap-1.5 text-[11px] sm:text-xs font-semibold text-green-300">
+                    <IconPin size={12} />
                     Full exact address
                   </span>
                   {precisionBadge && (
-                    <span className={`text-[10px] font-medium border px-2 py-0.5 rounded-full ${precisionBadge.cls}`}>
+                    <span className={`text-[9px] sm:text-[10px] font-medium border px-2 py-0.5 rounded-full ${precisionBadge.cls}`}>
                       {precisionBadge.text}
                     </span>
                   )}
                 </div>
 
                 {!hasFix ? (
-                  <p className="text-sm text-slate-400">The address will appear once the GPS signal is found.</p>
+                  <p className="text-xs sm:text-sm text-slate-400">The address will appear once the GPS signal is found.</p>
                 ) : address ? (
                   <>
                     {address.placeName && (
                       <p className="text-xs font-medium text-green-300 mb-0.5">{address.placeName}</p>
                     )}
-                    <p className="text-lg sm:text-xl font-semibold text-white leading-snug break-words">{address.street}</p>
-                    {address.area && <p className="text-sm text-slate-300 mt-0.5 break-words">{address.area}</p>}
+                    <p className="text-base sm:text-lg font-semibold text-white leading-snug break-words">{address.street}</p>
+                    {address.area && <p className="text-[11px] sm:text-sm text-slate-300 mt-0.5 break-words">{address.area}</p>}
                     {(address.postcode || address.country) && (
-                      <p className="text-xs text-slate-400 mt-0.5">
+                      <p className="text-[10px] sm:text-xs text-slate-400 mt-0.5">
                         {[address.postcode, address.country].filter(Boolean).join(' · ')}
                       </p>
                     )}
                   </>
                 ) : addressStatus === 'error' ? (
-                  <p className="text-sm text-amber-300">Could not look up the address. Retrying shortly.</p>
+                  <p className="text-xs sm:text-sm text-amber-300">Could not look up the address. Retrying shortly.</p>
                 ) : (
                   <div className="space-y-2 animate-pulse" aria-label="Looking up address">
-                    <div className="h-5 w-3/4 rounded bg-slate-700/70" />
-                    <div className="h-3.5 w-1/2 rounded bg-slate-700/50" />
+                    <div className="h-4 w-3/4 rounded bg-slate-700/70" />
+                    <div className="h-3 w-1/2 rounded bg-slate-700/50" />
                   </div>
                 )}
               </div>
@@ -1207,7 +1206,7 @@ export default function LiveLocationTracker({
                   type="button"
                   onClick={copyAddress}
                   disabled={!hasFix}
-                  className="text-[11px] font-semibold bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-100 border border-slate-600 px-2.5 py-1.5 rounded-lg transition-all flex items-center justify-center gap-1.5 focus:outline-none focus-visible:ring-2 focus-visible:ring-green-400"
+                  className="text-[10px] sm:text-[11px] font-semibold bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-100 border border-slate-600 px-2.5 py-1.5 rounded-lg transition-all flex items-center justify-center gap-1.5"
                 >
                   {copied ? <IconCheck size={12} className="text-green-400" /> : <IconCopy size={12} />}
                   {copied ? 'Copied' : 'Copy'}
@@ -1216,23 +1215,16 @@ export default function LiveLocationTracker({
                   href={mapsUrl}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="text-[11px] font-semibold bg-[#0a7337] hover:bg-[#085a2b] text-white px-2.5 py-1.5 rounded-lg transition-all flex items-center justify-center gap-1.5 focus:outline-none focus-visible:ring-2 focus-visible:ring-green-300"
+                  className="text-[10px] sm:text-[11px] font-semibold bg-[#0a7337] hover:bg-[#085a2b] text-white px-2.5 py-1.5 rounded-lg transition-all flex items-center justify-center gap-1.5"
                 >
                   <IconExternal size={12} />
                   Open map
                 </a>
               </div>
             </div>
-
-            {hasFix && address?.full && (
-              <p className="mt-3 pt-3 border-t border-slate-700/60 text-xs text-slate-300 leading-relaxed">
-                <span className="font-semibold text-slate-200">Complete address: </span>
-                <span className="italic">{address.full}</span>
-              </p>
-            )}
-
+            
             {hasFix && (
-              <p className="mt-2 text-[11px] font-mono text-slate-400 flex flex-wrap gap-x-4">
+              <p className="mt-2 pt-2 border-t border-slate-700/60 text-[10px] sm:text-[11px] font-mono text-slate-400 flex flex-wrap gap-x-4">
                 <span>Lat {coords[0].toFixed(6)}</span>
                 <span>Lng {coords[1].toFixed(6)}</span>
               </p>
@@ -1240,133 +1232,55 @@ export default function LiveLocationTracker({
           </section>
 
           {/* Movement stats */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-            <div className="bg-[#1a1f24] p-3 rounded-xl border border-slate-800">
-              <span className="block text-xs text-slate-400 mb-1">Movement</span>
-              <div className="font-semibold text-slate-100 text-sm flex items-center gap-2">
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 sm:gap-3">
+            <div className="bg-[#1a1f24] p-2.5 sm:p-3 rounded-xl border border-slate-800">
+              <span className="block text-[10px] sm:text-xs text-slate-400 mb-1">Movement</span>
+              <div className="font-semibold text-slate-100 text-xs sm:text-sm flex items-center gap-1.5">
                 {isMoving ? (
                   <>
-                    <span className="w-2.5 h-2.5 rounded-full bg-green-500 animate-pulse shrink-0" />
-                    {speedKmh} km/h, moving
+                    <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse shrink-0" />
+                    {speedKmh} km/h
                   </>
                 ) : (
                   <>
-                    <span className="w-2.5 h-2.5 rounded-full bg-amber-400 shrink-0" />
+                    <span className="w-2 h-2 rounded-full bg-amber-400 shrink-0" />
                     Stationary
                   </>
                 )}
               </div>
             </div>
 
-            <div className="bg-[#1a1f24] p-3 rounded-xl border border-slate-800">
-              <span className="block text-xs text-slate-400 mb-1">Heading</span>
-              <div className="font-semibold text-slate-100 text-sm flex items-center gap-2">
+            <div className="bg-[#1a1f24] p-2.5 sm:p-3 rounded-xl border border-slate-800">
+              <span className="block text-[10px] sm:text-xs text-slate-400 mb-1">Heading</span>
+              <div className="font-semibold text-slate-100 text-xs sm:text-sm flex items-center gap-1.5">
                 {hasHeading ? (
                   <>
-                    <IconArrow
-                      size={13}
-                      className="text-green-400"
-                      style={{ transform: `rotate(${(motion.heading as number) - 45}deg)` }}
-                    />
-                    {compass(motion.heading as number)} · {Math.round(motion.heading as number)}°
+                    <IconArrow size={10} className="text-green-400" style={{ transform: `rotate(${(motion.heading as number) - 45}deg)` }} />
+                    {compass(motion.heading as number)}
                   </>
                 ) : (
-                  <span className="text-slate-400 font-medium">Not moving</span>
+                  <span className="text-slate-400 font-medium">-</span>
                 )}
               </div>
             </div>
 
-            <div className="bg-[#1a1f24] p-3 rounded-xl border border-slate-800">
-              <span className="block text-xs text-slate-400 mb-1">Last update</span>
-              <div className="font-semibold text-slate-100 text-sm">
+            <div className="bg-[#1a1f24] p-2.5 sm:p-3 rounded-xl border border-slate-800 col-span-2 sm:col-span-1">
+              <span className="block text-[10px] sm:text-xs text-slate-400 mb-1">Last update</span>
+              <div className="font-semibold text-slate-100 text-xs sm:text-sm">
                 {lastUpdateMs ? (
                   <>
-                    {new Date(lastUpdateMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-                    <span className="text-slate-400 font-normal text-xs ml-1.5">
-                      ({secondsSinceUpdate}s ago)
+                    {new Date(lastUpdateMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    <span className="text-slate-400 font-normal text-[10px] sm:text-xs ml-1.5">
+                      ({secondsSinceUpdate}s)
                     </span>
                   </>
                 ) : (
-                  <span className="text-slate-400 font-medium">No data yet</span>
+                  <span className="text-slate-400 font-medium">-</span>
                 )}
               </div>
             </div>
           </div>
-
-          {/* Landmarks */}
-          <section className="rounded-xl border border-slate-800 bg-[#1a1f24] p-4">
-            <div className="flex items-baseline justify-between gap-2 mb-1">
-              <h4 className="text-sm font-semibold text-slate-100">Nearby landmarks</h4>
-              <span className="text-[11px] text-slate-400">Within {LANDMARK_RADIUS_M} m</span>
-            </div>
-
-            {proximitySentence && (
-              <p className="text-xs text-green-300 mb-3 leading-relaxed">
-                {proximitySentence}
-                {alsoNear.length > 0 && (
-                  <span className="text-slate-400">
-                    {' '}
-                    · also close to {alsoNear.map((l) => `${l.name} (${formatDistance(l.distance)} ${l.direction})`).join(', ')}
-                  </span>
-                )}
-              </p>
-            )}
-
-            {!hasFix ? (
-              <p className="text-xs text-slate-400">Landmarks will show once the vehicle's position is known.</p>
-            ) : landmarks.length > 0 ? (
-              <ul className="divide-y divide-slate-800/80">
-                {landmarks.map((l, i) => (
-                  <li key={l.id}>
-                    <button
-                      type="button"
-                      onClick={() => focusLandmark(l)}
-                      className="w-full flex items-center gap-3 py-2.5 text-left hover:bg-slate-800/50 rounded-lg px-2 -mx-2 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-green-400"
-                      title="Show on map"
-                    >
-                      <span className="h-2.5 w-2.5 rounded-full shrink-0" style={{ background: l.color }} />
-                      <span className="min-w-0 flex-1">
-                        <span className="block text-sm font-medium text-slate-100 truncate">
-                          {l.name}
-                          {i === 0 && (
-                            <span className="ml-2 text-[10px] font-medium text-green-300 bg-green-500/15 border border-green-500/30 px-1.5 py-0.5 rounded-full align-middle">
-                              Closest
-                            </span>
-                          )}
-                        </span>
-                        <span className="block text-[11px] text-slate-400">{l.category}</span>
-                      </span>
-                      <span className="shrink-0 text-right">
-                        <span className="block text-sm font-semibold text-slate-100">{formatDistance(l.distance)}</span>
-                        <span className="flex items-center justify-end gap-1 text-[11px] text-slate-400">
-                          <IconArrow size={10} style={{ transform: `rotate(${l.bearing - 45}deg)` }} />
-                          {l.direction}
-                        </span>
-                      </span>
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            ) : landmarkStatus === 'error' ? (
-              <p className="text-xs text-amber-300">Could not load nearby landmarks. Retrying shortly.</p>
-            ) : landmarkStatus === 'ready' ? (
-              <p className="text-xs text-slate-400">
-                No named landmarks are mapped within {LANDMARK_RADIUS_M} m. The area may be sparsely mapped.
-              </p>
-            ) : (
-              <div className="space-y-3 animate-pulse" aria-label="Finding landmarks">
-                {[0, 1, 2].map((n) => (
-                  <div key={n} className="flex items-center gap-3">
-                    <div className="h-2.5 w-2.5 rounded-full bg-slate-700" />
-                    <div className="h-3.5 flex-1 rounded bg-slate-700/60" />
-                    <div className="h-3.5 w-12 rounded bg-slate-700/60" />
-                  </div>
-                ))}
-              </div>
-            )}
-          </section>
-
-          <p className="text-[10px] text-slate-500 text-center">
+          <p className="text-[9px] sm:text-[10px] text-slate-500 text-center pb-2">
             Address and landmark data © OpenStreetMap contributors
           </p>
         </div>
