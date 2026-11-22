@@ -13,8 +13,11 @@ interface TripLive {
   status: string | null;
   started_at: string | null;
   current_location: string | null;
-  elapsed_seconds?: number | null; // measured by the database clock
-  location_age_seconds?: number | null; // age of the stored position, database clock
+  elapsed_seconds?: number | null;
+  location_age_seconds?: number | null;
+  speed_limit_kmh?: number | null;
+  max_speed_kmh?: number | null;
+  speeding?: boolean | null;
 }
 
 async function fetchTripLive(tripId: number | string): Promise<TripLive | null> {
@@ -54,6 +57,12 @@ interface Motion {
   speed: number | null;
   heading: number | null;
   accuracy: number | null;
+}
+
+interface LiveInfo {
+  limit: number;
+  maxKmh: number | null;
+  speeding: boolean;
 }
 
 interface AddressDetails {
@@ -98,16 +107,17 @@ declare global {
 const DEFAULT_ZOOM = 13;
 const LANDMARK_FOCUS_ZOOM = 14.5;
 
-const DEFAULT_COORDS: LatLng = [5.5544, 5.7932];
+// Enforce default start coordinates to Warri, Delta State
+const DEFAULT_COORDS: LatLng = [5.5174, 5.75];
 const LANDMARK_RADIUS_M = 1500;
 const GEOCODE_MIN_MOVE_M = 25;
 const LANDMARK_MIN_MOVE_M = 120;
 const STALE_AFTER_SECONDS = 30;
 
 // GPS quality filters
-const MAX_ACCEPTABLE_ACCURACY_M = 100; // ignore fixes worse than this once we have a decent one
-const FIRST_FIX_GRACE_MS = 15000; // after this long, accept a poorer first fix
-const MAX_PLAUSIBLE_SPEED_MS = 70; // ~250 km/h, anything faster is treated as a GPS jump
+const MAX_ACCEPTABLE_ACCURACY_M = 100;
+const FIRST_FIX_GRACE_MS = 15000;
+const MAX_PLAUSIBLE_SPEED_MS = 70; 
 
 const REGION_COORDS: Record<string, LatLng> = {
   effurun: [5.5544, 5.7932],
@@ -147,6 +157,13 @@ function bearingDeg(a: LatLng, b: LatLng): number {
 
 const formatDistance = (m: number) =>
   m < 1000 ? `${Math.max(1, Math.round(m / 5) * 5)} m` : `${(m / 1000).toFixed(1)} km`;
+
+const formatAgo = (s: number) => {
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
+  return `${Math.floor(s / 86400)}d ${Math.floor((s % 86400) / 3600)}h`;
+};
 
 const escapeHtml = (s: string) =>
   s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
@@ -212,32 +229,42 @@ function parseRawLocation(rawLocation?: string | null): {
 
 /* ------------------------------- Geocoding -------------------------------- */
 
-function buildAddress(data: any): AddressDetails | null {
+function buildAddress(data: any, lat: number, lng: number): AddressDetails | null {
   if (!data || !data.address) return null;
   const a = data.address;
 
   const houseNumber: string | undefined = a.house_number;
   const road: string | undefined = a.road || a.pedestrian || a.footway || a.path || a.residential;
+  const neighbourhood: string | undefined = a.neighbourhood || a.suburb || a.quarter || a.city_district;
+  
   const rawName: string | undefined = data.namedetails?.['name:en'] || data.namedetails?.name || data.name || undefined;
   const placeName = rawName && rawName !== road ? rawName : undefined;
 
-  const city = a.city || a.town || a.village || a.municipality;
+  const city = a.city || a.town || a.village || a.municipality || 'Warri';
   const lga = a.county || a.state_district;
+  
+  let state = a.state || 'Delta';
+  if (!state.toLowerCase().includes('state')) state += ' State';
+  const country = a.country || 'Nigeria';
 
-  const streetLine = [houseNumber, road].filter(Boolean).join(' ');
-  const areaParts = uniq([a.neighbourhood, a.suburb, a.quarter, a.city_district, city, lga, a.state]);
-
+  const isHighway = road && (road.toLowerCase().includes('highway') || road.toLowerCase().includes('express'));
+  const primaryTarget = placeName || neighbourhood || (isHighway ? city : road) || city;
+  
+  const streetLine = [houseNumber, primaryTarget].filter(Boolean).join(' ');
+  const areaParts = uniq([neighbourhood, city, lga, state]);
+  const fallbackStreet = `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+  
   const full =
-    uniq([placeName, streetLine, ...areaParts, a.postcode, a.country]).join(', ') || data.display_name || '';
+    uniq([placeName, houseNumber ? `${houseNumber} ${road}` : road, ...areaParts, country]).join(', ') || data.display_name || '';
 
   return {
     placeName,
-    street: streetLine || placeName || 'Effurun',
+    street: streetLine || city || fallbackStreet,
     area: areaParts.join(', '),
     postcode: a.postcode,
-    country: a.country,
+    country,
     full,
-    precision: houseNumber ? 'exact' : road ? 'street' : 'area',
+    precision: houseNumber ? 'exact' : (neighbourhood || road) ? 'street' : 'area',
   };
 }
 
@@ -255,18 +282,14 @@ function categorize(t: Record<string, string>): { label: string; color: string }
 
   if (amenity === 'place_of_worship') return { label: 'Place of worship', color: '#a78bfa' };
   if (['school', 'university', 'college', 'kindergarten'].includes(amenity)) return { label: 'School', color: '#60a5fa' };
-  if (['hospital', 'clinic', 'doctors', 'dentist', 'pharmacy'].includes(amenity) || t.healthcare)
-    return { label: 'Health', color: '#f87171' };
-  if (['restaurant', 'fast_food', 'cafe', 'bar', 'pub', 'food_court'].includes(amenity))
-    return { label: 'Food and drink', color: '#fb923c' };
+  if (['hospital', 'clinic', 'doctors', 'dentist', 'pharmacy'].includes(amenity) || t.healthcare) return { label: 'Health', color: '#f87171' };
+  if (['restaurant', 'fast_food', 'cafe', 'bar', 'pub', 'food_court'].includes(amenity)) return { label: 'Food and drink', color: '#fb923c' };
   if (['bank', 'atm', 'bureau_de_change'].includes(amenity)) return { label: 'Bank / ATM', color: '#facc15' };
   if (amenity === 'fuel') return { label: 'Fuel station', color: '#f472b6' };
   if (amenity === 'marketplace' || t.shop) return { label: 'Shop / market', color: '#34d399' };
   if (t.tourism || t.aeroway) return { label: 'Hotel / Airport', color: '#22d3ee' };
-  if (['police', 'townhall', 'courthouse', 'post_office', 'fire_station', 'community_centre'].includes(amenity))
-    return { label: 'Public service', color: '#94a3b8' };
-  if (['bus_station', 'ferry_terminal'].includes(amenity) || t.public_transport)
-    return { label: 'Transport', color: '#818cf8' };
+  if (['police', 'townhall', 'courthouse', 'post_office', 'fire_station', 'community_centre'].includes(amenity)) return { label: 'Public service', color: '#94a3b8' };
+  if (['bus_station', 'ferry_terminal'].includes(amenity) || t.public_transport) return { label: 'Transport', color: '#818cf8' };
   if (t.office) return { label: 'Office', color: '#94a3b8' };
   if (t.leisure) return { label: 'Leisure', color: '#4ade80' };
   if (t.historic) return { label: 'Historic site', color: '#d6a56b' };
@@ -312,87 +335,21 @@ function parseLandmarks(elements: any[]): RawLandmark[] {
 
 function Icon({ children, size = 14, className = '' }: { children: ReactNode; size?: number; className?: string }) {
   return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-      aria-hidden="true"
-    >
+    <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden="true">
       {children}
     </svg>
   );
 }
 
-const IconPin = (p: { size?: number; className?: string }) => (
-  <Icon {...p}>
-    <path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z" />
-    <circle cx="12" cy="10" r="3" />
-  </Icon>
-);
-const IconCopy = (p: { size?: number; className?: string }) => (
-  <Icon {...p}>
-    <rect x="9" y="9" width="13" height="13" rx="2" />
-    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-  </Icon>
-);
-const IconCheck = (p: { size?: number; className?: string }) => (
-  <Icon {...p}>
-    <polyline points="20 6 9 17 4 12" />
-  </Icon>
-);
-const IconExternal = (p: { size?: number; className?: string }) => (
-  <Icon {...p}>
-    <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
-    <polyline points="15 3 21 3 21 9" />
-    <line x1="10" y1="14" x2="21" y2="3" />
-  </Icon>
-);
-const IconClock = (p: { size?: number; className?: string }) => (
-  <Icon {...p}>
-    <circle cx="12" cy="12" r="10" />
-    <polyline points="12 6 12 12 16 14" />
-  </Icon>
-);
-const IconMaximize = (p: { size?: number; className?: string }) => (
-  <Icon {...p}>
-    <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3" />
-  </Icon>
-);
-const IconMinimize = (p: { size?: number; className?: string }) => (
-  <Icon {...p}>
-    <path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3" />
-  </Icon>
-);
-const IconCrosshair = (p: { size?: number; className?: string }) => (
-  <Icon {...p}>
-    <circle cx="12" cy="12" r="10" />
-    <line x1="22" y1="12" x2="18" y2="12" />
-    <line x1="6" y1="12" x2="2" y2="12" />
-    <line x1="12" y1="6" x2="12" y2="2" />
-    <line x1="12" y1="22" x2="12" y2="18" />
-  </Icon>
-);
-const IconArrow = (p: { size?: number; className?: string; style?: React.CSSProperties }) => (
-  <svg
-    xmlns="http://www.w3.org/2000/svg"
-    width={p.size ?? 12}
-    height={p.size ?? 12}
-    viewBox="0 0 24 24"
-    fill="currentColor"
-    className={p.className}
-    style={p.style}
-    aria-hidden="true"
-  >
-    <polygon points="3 11 22 2 13 21 11 13 3 11" />
-  </svg>
-);
+const IconPin = (p: { size?: number; className?: string }) => (<Icon {...p}><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z" /><circle cx="12" cy="10" r="3" /></Icon>);
+const IconCopy = (p: { size?: number; className?: string }) => (<Icon {...p}><rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></Icon>);
+const IconCheck = (p: { size?: number; className?: string }) => (<Icon {...p}><polyline points="20 6 9 17 4 12" /></Icon>);
+const IconExternal = (p: { size?: number; className?: string }) => (<Icon {...p}><path d="M18 13v6a2 2 0 0 1-2-2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" /><polyline points="15 3 21 3 21 9" /><line x1="10" y1="14" x2="21" y2="3" /></Icon>);
+const IconClock = (p: { size?: number; className?: string }) => (<Icon {...p}><circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" /></Icon>);
+const IconMaximize = (p: { size?: number; className?: string }) => (<Icon {...p}><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3" /></Icon>);
+const IconMinimize = (p: { size?: number; className?: string }) => (<Icon {...p}><path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3" /></Icon>);
+const IconCrosshair = (p: { size?: number; className?: string }) => (<Icon {...p}><circle cx="12" cy="12" r="10" /><line x1="22" y1="12" x2="18" y2="12" /><line x1="6" y1="12" x2="2" y2="12" /><line x1="12" y1="6" x2="12" y2="2" /><line x1="12" y1="22" x2="12" y2="18" /></Icon>);
+const IconArrow = (p: { size?: number; className?: string; style?: React.CSSProperties }) => (<svg xmlns="http://www.w3.org/2000/svg" width={p.size ?? 12} height={p.size ?? 12} viewBox="0 0 24 24" fill="currentColor" className={p.className} style={p.style} aria-hidden="true"><polygon points="3 11 22 2 13 21 11 13 3 11" /></svg>);
 
 /* -------------------------------------------------------------------------- */
 /*  Component                                                                 */
@@ -407,7 +364,6 @@ export default function LiveLocationTracker({
 }: LiveLocationTrackerProps) {
   const initial = useMemo(() => parseRawLocation(currentLocation), [currentLocation]);
 
-  // Map refs
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<any>(null);
   const markerRef = useRef<any>(null);
@@ -416,7 +372,6 @@ export default function LiveLocationTracker({
   const landmarkMarkersRef = useRef<Record<string, any>>({});
   const activeTileLayerRef = useRef<any>(null);
 
-  // Data-fetching refs
   const followRef = useRef(true);
   const coordsRef = useRef<LatLng>(initial.coords);
   const lastGeocodeRef = useRef<LatLng | null>(null);
@@ -425,15 +380,16 @@ export default function LiveLocationTracker({
   const landmarkAbortRef = useRef<AbortController | null>(null);
   const lastSentRef = useRef(0);
 
-  // GPS filtering and server-based timer
   const lastGoodFixRef = useRef<{ pos: LatLng; t: number; acc: number } | null>(null);
   const elapsedAnchorRef = useRef<{ seconds: number; perf: number } | null>(null);
 
-  // State
   const [coords, setCoords] = useState<LatLng>(initial.coords);
   const [hasFix, setHasFix] = useState(initial.hasFix);
   const [motion, setMotion] = useState<Motion>(initial.motion);
   const [lastUpdateMs, setLastUpdateMs] = useState<number | null>(initial.updatedAt ?? (initial.hasFix ? Date.now() : null));
+
+  // Fix: Added live stats state
+  const [live, setLive] = useState<LiveInfo>({ limit: 100, maxKmh: null, speeding: false });
 
   const [address, setAddress] = useState<AddressDetails | null>(null);
   const [addressStatus, setAddressStatus] = useState<LoadStatus>('idle');
@@ -446,6 +402,7 @@ export default function LiveLocationTracker({
   const [isFollowing, setIsFollowing] = useState(true);
   const [copied, setCopied] = useState(false);
   const [mapProvider, setMapProvider] = useState<MapProviderType>('osm');
+  const [touchLocked, setTouchLocked] = useState(false);
 
   const [tripStartTime, setTripStartTime] = useState<string | null>(startedAt);
   const [now, setNow] = useState(() => Date.now());
@@ -464,7 +421,6 @@ export default function LiveLocationTracker({
     coordsRef.current = coords;
   }, [coords]);
 
-  // Elapsed trip time.
   const elapsedSeconds = (() => {
     void now;
     const a = elapsedAnchorRef.current;
@@ -506,14 +462,13 @@ export default function LiveLocationTracker({
         `&zoom=18&accept-language=en&lat=${pos[0]}&lon=${pos[1]}`;
       const res = await fetch(url, { signal: ctrl.signal });
       if (!res.ok) throw new Error('primary geocode failed');
-      const parsed = buildAddress(await res.json());
+      const parsed = buildAddress(await res.json(), pos[0], pos[1]);
       if (!parsed) throw new Error('no address');
       setAddress(parsed);
       setAddressStatus('ready');
     } catch (e: any) {
       if (e?.name === 'AbortError') return;
 
-      // Reliable fallback: BigDataCloud
       try {
         const fallbackRes = await fetch(
           `https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${pos[0]}&longitude=${pos[1]}&localityLanguage=en`,
@@ -521,8 +476,13 @@ export default function LiveLocationTracker({
         );
         if (fallbackRes.ok) {
           const data = await fallbackRes.json();
-          const street = data.locality || data.neighbourhood || 'Effurun';
-          const area = [data.city, data.principalSubdivision, data.countryName].filter(Boolean).join(', ');
+          const street = data.locality || data.neighbourhood || `${pos[0].toFixed(5)}, ${pos[1].toFixed(5)}`;
+          const city = data.city || 'Warri';
+          let state = data.principalSubdivision || 'Delta State';
+          if (!state.toLowerCase().includes('state')) state += ' State';
+          const country = data.countryName || 'Nigeria';
+          const area = [city, state, country].filter(Boolean).join(', ');
+          
           setAddress({
             street,
             area,
@@ -532,9 +492,7 @@ export default function LiveLocationTracker({
           setAddressStatus('ready');
           return;
         }
-      } catch {
-        // fallback failed
-      }
+      } catch {}
 
       lastGeocodeRef.current = null;
       setAddressStatus((s) => (s === 'ready' ? s : 'error'));
@@ -573,7 +531,6 @@ export default function LiveLocationTracker({
 
   useEffect(() => {
     if (!hasFix || hidden) return;
-
     const tick = () => {
       const here = coordsRef.current;
       if (!lastGeocodeRef.current || distanceM(lastGeocodeRef.current, here) > GEOCODE_MIN_MOVE_M) {
@@ -585,19 +542,10 @@ export default function LiveLocationTracker({
         fetchLandmarks(here);
       }
     };
-
     tick();
     const id = setInterval(tick, 4000);
     return () => clearInterval(id);
   }, [hasFix, hidden, fetchAddress, fetchLandmarks]);
-
-  useEffect(
-    () => () => {
-      addressAbortRef.current?.abort();
-      landmarkAbortRef.current?.abort();
-    },
-    []
-  );
 
   const landmarks = useMemo<Landmark[]>(() => {
     return rawLandmarks
@@ -617,7 +565,6 @@ export default function LiveLocationTracker({
       setIsLeafletReady(true);
       return;
     }
-
     let script = document.querySelector<HTMLScriptElement>('script[data-leaflet]');
     if (!script) {
       const css = document.createElement('link');
@@ -869,19 +816,11 @@ export default function LiveLocationTracker({
 
   useEffect(() => {
     if (isManagerView || typeof navigator === 'undefined' || !('wakeLock' in navigator)) return;
-
     let lock: any = null;
     const acquire = async () => {
-      try {
-        lock = await (navigator as any).wakeLock.request('screen');
-      } catch {
-        /* not allowed right now */
-      }
+      try { lock = await (navigator as any).wakeLock.request('screen'); } catch {}
     };
-    const onVisible = () => {
-      if (document.visibilityState === 'visible') acquire();
-    };
-
+    const onVisible = () => { if (document.visibilityState === 'visible') acquire(); };
     acquire();
     document.addEventListener('visibilitychange', onVisible);
     return () => {
@@ -918,6 +857,13 @@ export default function LiveLocationTracker({
           elapsedAnchorRef.current = { seconds: trip.elapsed_seconds, perf: sampledAt };
         }
       }
+      
+      // Keep track of speed limits and violations
+      setLive({
+        limit: typeof trip.speed_limit_kmh === 'number' ? trip.speed_limit_kmh : 100,
+        maxKmh: typeof trip.max_speed_kmh === 'number' ? trip.max_speed_kmh : null,
+        speeding: Boolean(trip.speeding),
+      });
 
       if (!isManagerView) return;
 
@@ -951,6 +897,7 @@ export default function LiveLocationTracker({
   };
 
   const focusLandmark = (l: Landmark) => {
+    if (touchLocked) setIsExpanded(true);
     followRef.current = false;
     setIsFollowing(false);
     mapRef.current?.flyTo([l.lat, l.lng], LANDMARK_FOCUS_ZOOM, { animate: true, duration: 0.8 });
@@ -963,9 +910,7 @@ export default function LiveLocationTracker({
       await navigator.clipboard.writeText(text);
       setCopied(true);
       setTimeout(() => setCopied(false), 1800);
-    } catch {
-      /* clipboard unavailable */
-    }
+    } catch {}
   };
 
   /* ------------------------------ Derived values -------------------------- */
@@ -983,7 +928,7 @@ export default function LiveLocationTracker({
     signal === 'live'
       ? 'Live GPS'
       : signal === 'stale'
-      ? `No update for ${secondsSinceUpdate}s. Signal may be lost`
+      ? `No update for ${formatAgo(secondsSinceUpdate ?? 0)}. Signal may be lost`
       : 'Waiting for GPS signal';
 
   const title = isManagerView ? `${driverName}'s live location` : 'Your live location';
@@ -992,6 +937,9 @@ export default function LiveLocationTracker({
     motion.speed !== null && motion.speed !== undefined && !isNaN(motion.speed) ? Math.round(motion.speed * 3.6) : null;
   const isMoving = speedKmh !== null && speedKmh > 3;
   const hasHeading = motion.heading !== null && motion.heading !== undefined && !isNaN(motion.heading) && isMoving;
+
+  const overLimit = speedKmh !== null && speedKmh > live.limit;
+  const speeding = overLimit || live.speeding;
 
   const accuracyM = motion.accuracy !== null && motion.accuracy !== undefined ? Math.round(motion.accuracy) : null;
   const accuracyLabel =
@@ -1038,10 +986,10 @@ export default function LiveLocationTracker({
         @media (prefers-reduced-motion: reduce) { .lj-pulse { animation: none; opacity: .5; } }
       `}</style>
 
-      {/* Header Container - Re-styled for better mobile layout, allowing wrap */}
+      {/* Header Container */}
       <div className="px-3 sm:px-4 py-3 bg-[#0d1013] border-b border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shrink-0">
         
-        {/* Top row / Left side: Title and status */}
+        {/* Top row / Left side */}
         <div className="flex items-center justify-between sm:justify-start gap-3 w-full sm:w-auto">
           <div className="flex items-center gap-2 min-w-0">
             <span className="relative flex h-2.5 w-2.5 shrink-0 mt-0.5">
@@ -1056,7 +1004,6 @@ export default function LiveLocationTracker({
             </div>
           </div>
           
-          {/* Mobile-only quick expand button */}
           <button
             type="button"
             onClick={() => setIsExpanded((v) => !v)}
@@ -1067,7 +1014,7 @@ export default function LiveLocationTracker({
           </button>
         </div>
 
-        {/* Bottom row / Right side: Controls */}
+        {/* Bottom row / Right side */}
         <div className="flex items-center justify-between sm:justify-end gap-2 sm:gap-2.5 w-full sm:w-auto overflow-x-auto pb-1 sm:pb-0 scrollbar-hide">
           {elapsedSeconds !== null && (
             <span
@@ -1079,7 +1026,6 @@ export default function LiveLocationTracker({
             </span>
           )}
 
-          {/* Map Provider Switcher Button */}
           <div className="shrink-0 flex items-center rounded-lg bg-slate-800 p-0.5 border border-slate-700">
             <button
               type="button"
@@ -1114,7 +1060,6 @@ export default function LiveLocationTracker({
             {isFollowing ? 'Following' : 'Recenter'}
           </button>
 
-          {/* Desktop-only expand button (hidden on mobile to save horizontal space) */}
           <button
             type="button"
             onClick={() => setIsExpanded((v) => !v)}
@@ -1126,7 +1071,6 @@ export default function LiveLocationTracker({
         </div>
       </div>
 
-      {/* Map Body */}
       <div className={`relative w-full bg-slate-900 transition-all ${isExpanded ? 'flex-1 min-h-[400px]' : 'h-[350px] sm:h-[400px]'}`}>
         <div ref={mapContainerRef} className="w-full h-full z-0" />
 
@@ -1145,8 +1089,8 @@ export default function LiveLocationTracker({
         )}
 
         {hasFix && accuracyM !== null && (
-          <div className="absolute top-3 left-3 z-[400] bg-slate-900/90 backdrop-blur-md border border-slate-700/80 px-2 py-1 rounded-full text-[10px] flex items-center gap-1 shadow">
-            <span className={`font-semibold ${accuracyColor}`}>{accuracyLabel}</span>
+          <div className="absolute top-3 left-3 z-[400] bg-slate-900/90 backdrop-blur-md border border-slate-700/80 px-2 sm:px-2.5 py-1 rounded-full text-[10px] flex items-center gap-1 shadow">
+            <span className={`font-semibold ${accuracyColor}`}>{accuracyLabel} accuracy</span>
             <span className="text-slate-400 font-mono">±{accuracyM}m</span>
           </div>
         )}
@@ -1160,7 +1104,6 @@ export default function LiveLocationTracker({
       {/* Details */}
       <div className={`bg-[#14181c] border-t border-slate-800 shrink-0 ${isExpanded ? 'max-h-[48vh] overflow-y-auto' : ''}`}>
         <div className="p-3 sm:p-4 space-y-3">
-          {/* Exact address */}
           <section className="rounded-xl border border-slate-700/70 bg-gradient-to-br from-[#1b2a22] to-[#1a1f24] p-3 sm:p-4">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0 flex-1">
@@ -1224,7 +1167,7 @@ export default function LiveLocationTracker({
             </div>
             
             {hasFix && (
-              <p className="mt-2 pt-2 border-t border-slate-700/60 text-[10px] sm:text-[11px] font-mono text-slate-400 flex flex-wrap gap-x-4">
+              <p className="mt-2 pt-2 border-t border-slate-700/60 text-[9px] sm:text-[10px] font-mono text-slate-400 flex flex-wrap gap-x-4">
                 <span>Lat {coords[0].toFixed(6)}</span>
                 <span>Lng {coords[1].toFixed(6)}</span>
               </p>
@@ -1232,15 +1175,17 @@ export default function LiveLocationTracker({
           </section>
 
           {/* Movement stats */}
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 sm:gap-3">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-3">
             <div className="bg-[#1a1f24] p-2.5 sm:p-3 rounded-xl border border-slate-800">
-              <span className="block text-[10px] sm:text-xs text-slate-400 mb-1">Movement</span>
-              <div className="font-semibold text-slate-100 text-xs sm:text-sm flex items-center gap-1.5">
+              <span className="block text-[10px] sm:text-xs text-slate-400 mb-1">Speed</span>
+              <div className={`font-semibold text-xs sm:text-sm flex items-center gap-1.5 ${speeding ? 'text-red-400' : 'text-slate-100'}`}>
                 {isMoving ? (
                   <>
                     <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse shrink-0" />
                     {speedKmh} km/h
                   </>
+                ) : speedKmh === null ? (
+                  'Unknown'
                 ) : (
                   <>
                     <span className="w-2 h-2 rounded-full bg-amber-400 shrink-0" />
@@ -1249,40 +1194,34 @@ export default function LiveLocationTracker({
                 )}
               </div>
             </div>
-
+            <div className="bg-[#1a1f24] p-2.5 sm:p-3 rounded-xl border border-slate-800">
+              <span className="block text-[10px] sm:text-xs text-slate-400 mb-1">Top speed</span>
+              <div className="font-semibold text-xs sm:text-sm text-slate-100">{live.maxKmh === null ? 'No data' : `${Math.round(live.maxKmh)} km/h`}</div>
+            </div>
             <div className="bg-[#1a1f24] p-2.5 sm:p-3 rounded-xl border border-slate-800">
               <span className="block text-[10px] sm:text-xs text-slate-400 mb-1">Heading</span>
-              <div className="font-semibold text-slate-100 text-xs sm:text-sm flex items-center gap-1.5">
-                {hasHeading ? (
+              <div className="font-semibold text-xs sm:text-sm text-slate-100 flex items-center gap-1.5">
+                {isMoving && motion.heading !== null ? (
                   <>
                     <IconArrow size={10} className="text-green-400" style={{ transform: `rotate(${(motion.heading as number) - 45}deg)` }} />
-                    {compass(motion.heading as number)}
+                    {compass(motion.heading)}
                   </>
-                ) : (
-                  <span className="text-slate-400 font-medium">-</span>
-                )}
+                ) : 'Not moving'}
               </div>
             </div>
-
-            <div className="bg-[#1a1f24] p-2.5 sm:p-3 rounded-xl border border-slate-800 col-span-2 sm:col-span-1">
+            <div className="bg-[#1a1f24] p-2.5 sm:p-3 rounded-xl border border-slate-800">
               <span className="block text-[10px] sm:text-xs text-slate-400 mb-1">Last update</span>
-              <div className="font-semibold text-slate-100 text-xs sm:text-sm">
+              <div className="font-semibold text-xs sm:text-sm text-slate-100">
                 {lastUpdateMs ? (
                   <>
                     {new Date(lastUpdateMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                    <span className="text-slate-400 font-normal text-[10px] sm:text-xs ml-1.5">
-                      ({secondsSinceUpdate}s)
-                    </span>
+                    <span className="text-slate-400 font-normal text-[10px] ml-1.5">({secondsSinceUpdate}s)</span>
                   </>
-                ) : (
-                  <span className="text-slate-400 font-medium">-</span>
-                )}
+                ) : 'No data yet'}
               </div>
             </div>
           </div>
-          <p className="text-[9px] sm:text-[10px] text-slate-500 text-center pb-2">
-            Address and landmark data © OpenStreetMap contributors
-          </p>
+          <p className="text-[9px] sm:text-[10px] text-slate-500 text-center pb-2">Map data © Google</p>
         </div>
       </div>
     </div>
